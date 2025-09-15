@@ -18,6 +18,13 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { SpotifyAuthButton } from "@/components/spotify-auth-button";
 import {
@@ -30,12 +37,15 @@ import {
   EyeOff,
   Trash2,
   RotateCcw,
+  PlayCircle,
+  CheckCircle2,
 } from "lucide-react";
 import { AudioWaveform } from "@/components/audio-waveform";
 import { VinylDisc } from "@/components/vinyl-disc";
 import { HeartButton } from "@/components/heart-button";
 import { LovedSongsCard } from "@/components/loved-songs-card";
 import { useLovedSongsStore } from "@/stores/loved-songs-store";
+import { useModelStore } from "@/stores/model-store";
 import { useState, useEffect, Fragment, useCallback } from "react";
 import { openAIService, type SongRecommendation } from "@/lib/openai-service";
 import { useSpotifyStore } from "@/stores/spotify-store";
@@ -76,6 +86,8 @@ export default function Home() {
   const getSelectedSongs = useLovedSongsStore(
     (state) => state.getSelectedSongs
   );
+  const selectedModel = useModelStore((state) => state.selectedModel);
+  const setSelectedModel = useModelStore((state) => state.setSelectedModel);
 
   // TanStack Query hooks for Spotify data
   const { data: spotifyQueue } = useSpotifyQueue();
@@ -145,7 +157,8 @@ export default function Home() {
         "Continue the vibe",
         conversationHistory,
         recentTracks,
-        selectedSongs.map((song) => ({ artist: song.artist, title: song.name }))
+        selectedSongs.map((song) => ({ artist: song.artist, title: song.name })),
+        selectedModel
       );
 
       // Set the DJ message and recommendations
@@ -310,6 +323,11 @@ export default function Home() {
 
       // Clear input immediately for better UX
       setInputValue("");
+      // Reset textarea height
+      const textarea = document.querySelector('textarea');
+      if (textarea) {
+        textarea.style.height = "36px";
+      }
 
       try {
         // Add user message to history
@@ -331,7 +349,8 @@ export default function Home() {
           selectedSongs.map((song) => ({
             artist: song.artist,
             title: song.name,
-          }))
+          })),
+          selectedModel
         );
 
         // Set the DJ message and recommendations
@@ -418,8 +437,8 @@ export default function Home() {
     }
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !isLoading) {
+  const handleKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey && !isLoading) {
       e.preventDefault();
       handleSend();
     }
@@ -652,23 +671,51 @@ export default function Home() {
                         variant={isAutoMode ? "default" : "outline"}
                         size="sm"
                         onClick={toggleAutoMode}
-                        className="shrink-0"
+                        className="shrink-0 gap-1.5"
                         title={
-                          isAutoMode ? "Auto mode is ON" : "Auto mode is OFF"
+                          isAutoMode ? "Autoplay is ON" : "Autoplay is OFF"
                         }
                       >
-                        Auto
+                        <div className="relative w-4 h-4">
+                          <PlayCircle
+                            className={`w-4 h-4 absolute inset-0 transition-all duration-300 ${
+                              isAutoMode
+                                ? "opacity-0 scale-50 rotate-180"
+                                : "opacity-100 scale-100 rotate-0"
+                            }`}
+                          />
+                          <CheckCircle2
+                            className={`w-4 h-4 absolute inset-0 transition-all duration-300 ${
+                              isAutoMode
+                                ? "opacity-100 scale-100 rotate-0 animate-bounce-in"
+                                : "opacity-0 scale-50 -rotate-180"
+                            }`}
+                          />
+                        </div>
+                        Autoplay
                       </Button>
                     )}
-                  <div className="relative flex-1">
-                    <input
+                  <div className="relative flex-1 flex items-center">
+                    <textarea
                       value={inputValue}
                       onChange={(e) => setInputValue(e.target.value)}
-                      onKeyPress={handleKeyPress}
-                      placeholder='Try: "Play something like John Mayer Gravity, heartfelt and emotional"'
-                      className={`w-full px-4 p-2 text-base border-0 bg-transparent shadow-none focus-visible:ring-0 focus:outline-none focus:ring-0 focus:ring-offset-0 ${
+                      onKeyDown={handleKeyPress}
+                      placeholder='Try: "Play something like John Mayer Gravity"'
+                      rows={1}
+                      className={`w-full px-4 py-2 text-base border-0 bg-transparent shadow-none focus-visible:ring-0 focus:outline-none focus:ring-0 focus:ring-offset-0 resize-none overflow-hidden leading-tight placeholder-truncate ${
                         inputValue.trim() ? "pr-12" : ""
                       }`}
+                      style={{
+                        minHeight: "36px",
+                        maxHeight: "80px",
+                        height: "36px",
+                        lineHeight: "1.25"
+                      }}
+                      onInput={(e) => {
+                        const target = e.target as HTMLTextAreaElement;
+                        target.style.height = "36px";
+                        target.style.height = Math.min(target.scrollHeight, 80) + "px";
+                      }}
                       disabled={
                         isLoading ||
                         (isSpotifyAuthenticated &&
@@ -699,6 +746,16 @@ export default function Home() {
                       )}
                     </Button>
                   </div>
+                  {/* Model selector */}
+                  <Select value={selectedModel} onValueChange={(value) => setSelectedModel(value as "gpt-5" | "gpt-5-mini")}>
+                    <SelectTrigger className="w-[130px] h-9 shrink-0">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent align="end">
+                      <SelectItem value="gpt-5">GPT-5</SelectItem>
+                      <SelectItem value="gpt-5-mini">GPT-5 Mini</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </CardContent>
               {/* Overlay message when Spotify is not playing */}

@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { z } from "zod";
 import { zodResponseFormat } from "openai/helpers/zod";
 import type { PlayedTrack } from "@/types/conversation";
+import type { ModelType } from "@/stores/model-store";
 
 // Define the schema for a song recommendation
 const Song = z.object({
@@ -46,7 +47,8 @@ export class OpenAIService {
     request: string,
     conversationHistory: Array<{ role: string; content: string }> = [],
     recentlyPlayed: PlayedTrack[] = [],
-    lovedSongs: Array<{ artist: string; title: string }> = []
+    lovedSongs: Array<{ artist: string; title: string }> = [],
+    model: ModelType = "gpt-5-mini"
   ): Promise<SongRecommendation> {
     if (!this.client) {
       throw new Error(
@@ -99,7 +101,7 @@ ${lovedSongs.slice(0, 10).map((s) => `- ${s.artist} - ${s.title}`).join("\n")}`
 
     // Single structured request - no streaming
     const completion = await this.client.chat.completions.parse({
-      model: "gpt-5-mini",
+      model: model,
       reasoning_effort: "medium",
       messages,
       response_format: zodResponseFormat(DJResponse, "dj_response"),
