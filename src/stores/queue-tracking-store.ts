@@ -37,9 +37,15 @@ export const useQueueTrackingStore = create<QueueTrackingStore>()(
       userQueuedTracks: [],
 
       addQueuedTracks: (tracks) => {
-        set((state) => ({
-          userQueuedTracks: [...state.userQueuedTracks, ...tracks]
-        }));
+        set((state) => {
+          // Remove any existing entries for these track IDs to prevent duplicates
+          const trackIds = new Set(tracks.map(t => t.id));
+          const filteredExisting = state.userQueuedTracks.filter(t => !trackIds.has(t.id));
+
+          return {
+            userQueuedTracks: [...filteredExisting, ...tracks]
+          };
+        });
       },
 
       removeQueuedTrack: (trackId) => {

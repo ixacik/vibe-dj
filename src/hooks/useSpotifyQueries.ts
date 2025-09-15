@@ -5,6 +5,9 @@ import { useSpotifyStore } from '@/stores/spotify-store';
 import { useQueueTrackingStore } from '@/stores/queue-tracking-store';
 import type { SpotifyQueue, EnhancedSpotifyQueue, EnhancedSpotifyTrack } from '@/types/spotify';
 
+// Shared skip state to coordinate between hooks
+let globalIsSkipping = false;
+
 /**
  * Filter queue to only show tracks we've added
  * Also deduplicates currently playing track from queue
@@ -33,10 +36,17 @@ function filterUserQueue(queue: SpotifyQueue | null, isUserQueued: (id: string) 
 export function useSpotifyQueue() {
   const isAuthenticated = useSpotifyStore(state => state.isAuthenticated);
   const { isUserQueued, cleanupOldTracks, userQueuedTracks } = useQueueTrackingStore();
+  const queryClient = useQueryClient();
 
   return useQuery({
     queryKey: ['spotify', 'queue'],
     queryFn: async () => {
+      // Return cached data while skipping
+      if (globalIsSkipping) {
+        const cached = queryClient.getQueryData<EnhancedSpotifyQueue>(['spotify', 'queue']);
+        if (cached) return cached;
+      }
+
       const spotify = SpotifyService.getInstance();
       const queue = await spotify.getQueue();
 
@@ -48,10 +58,13 @@ export function useSpotifyQueue() {
 
       // Enhance queue items with prompt summaries from our tracking
       if (filteredQueue) {
+        // Sort tracked items by addedAt (newest first) to get most recent entry
+        const sortedTrackedItems = [...userQueuedTracks].sort((a, b) => b.addedAt - a.addedAt);
+
         // Enhance queue tracks
         if (filteredQueue.queue) {
           filteredQueue.queue = filteredQueue.queue.map(track => {
-            const trackedItem = userQueuedTracks.find(t => t.id === track.id);
+            const trackedItem = sortedTrackedItems.find(t => t.id === track.id);
             return {
               ...track,
               promptSummary: trackedItem?.promptSummary
@@ -61,7 +74,7 @@ export function useSpotifyQueue() {
 
         // Enhance currently playing track
         if (filteredQueue.currently_playing) {
-          const trackedItem = userQueuedTracks.find(t => t.id === filteredQueue.currently_playing!.id);
+          const trackedItem = sortedTrackedItems.find(t => t.id === filteredQueue.currently_playing!.id);
           filteredQueue.currently_playing = {
             ...filteredQueue.currently_playing,
             promptSummary: trackedItem?.promptSummary
@@ -71,8 +84,10 @@ export function useSpotifyQueue() {
 
       return filteredQueue;
     },
-    enabled: isAuthenticated,
+    enabled: isAuthenticated && !globalIsSkipping,
     refetchInterval: (query) => {
+      // Don't poll while skipping
+      if (globalIsSkipping) return false;
       // Poll faster when music is playing, slower when paused/stopped
       const data = query.state.data;
       if (!data) return 10000; // 10s when no data
@@ -101,14 +116,14 @@ export function useSpotifyPlayback() {
     staleTime: 3000,
   });
 
-  // Remove track from our tracking when it starts playing
+  // Track currently playing track ID and remove from queue tracking
   useEffect(() => {
     if (query.data?.item && 'id' in query.data.item) {
       const currentTrackId = query.data.item.id;
-
-      // Only remove if this is a new track (not the same one as before)
+      // Only process if track changed
       if (currentTrackId !== lastPlayingTrackId.current) {
         lastPlayingTrackId.current = currentTrackId;
+        // Remove from our tracking since it's now playing
         removeQueuedTrack(currentTrackId);
       }
     }
@@ -122,37 +137,42 @@ export function useSpotifyPlayback() {
  */
 export function useSkipToTrack() {
   const queryClient = useQueryClient();
-  const { removeQueuedTrack } = useQueueTrackingStore();
 
   return useMutation({
     mutationFn: async (targetTrackId: string) => {
-      const spotify = SpotifyService.getInstance();
+      // Set global flag to stop polling
+      globalIsSkipping = true;
 
-      // Get current queue to find track position
-      const currentQueue = queryClient.getQueryData<EnhancedSpotifyQueue | null>(['spotify', 'queue']);
-      if (!currentQueue?.queue) {
-        throw new Error('No queue available');
-      }
+      try {
+        const spotify = SpotifyService.getInstance();
 
-      const targetIndex = currentQueue.queue.findIndex(track => track.id === targetTrackId);
-      if (targetIndex === -1) {
-        throw new Error('Track not found in queue');
-      }
-
-      // Skip to the track (Spotify doesn't have direct play-by-id for queue items)
-      // We'll skip multiple times to reach the target
-      for (let i = 0; i <= targetIndex; i++) {
-        await spotify.skipToNext();
-        // Small delay to avoid rate limiting
-        if (i < targetIndex) {
-          await new Promise(resolve => setTimeout(resolve, 100));
+        // Get the FULL unfiltered queue from Spotify
+        const fullQueue = await spotify.getQueue();
+        if (!fullQueue?.queue) {
+          throw new Error('No queue available');
         }
+
+        // Find the target track position in the FULL queue
+        const targetIndex = fullQueue.queue.findIndex(track => track.id === targetTrackId);
+        if (targetIndex === -1) {
+          throw new Error('Track not found in queue');
+        }
+
+        // Skip to the track (Spotify doesn't have direct play-by-id for queue items)
+        // We'll skip multiple times to reach the target
+        for (let i = 0; i <= targetIndex; i++) {
+          await spotify.skipToNext();
+          // Small delay to avoid rate limiting
+          if (i < targetIndex) {
+            await new Promise(resolve => setTimeout(resolve, 200));
+          }
+        }
+
+        return targetTrackId;
+      } finally {
+        // Always reset the flag
+        globalIsSkipping = false;
       }
-
-      // Remove the track from our tracking since it's now playing
-      removeQueuedTrack(targetTrackId);
-
-      return targetTrackId;
     },
     onMutate: async (targetTrackId) => {
       // Cancel any outgoing refetches
@@ -181,9 +201,11 @@ export function useSkipToTrack() {
       }
     },
     onSettled: () => {
-      // Always refetch after mutation
-      queryClient.invalidateQueries({ queryKey: ['spotify', 'queue'] });
-      queryClient.invalidateQueries({ queryKey: ['spotify', 'playback'] });
+      // Wait a bit before refetching to ensure Spotify has updated
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ['spotify', 'queue'] });
+        queryClient.invalidateQueries({ queryKey: ['spotify', 'playback'] });
+      }, 500);
     },
   });
 }

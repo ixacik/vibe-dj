@@ -10,6 +10,8 @@ const SCOPES = [
   'user-read-currently-playing',
   'user-read-email',
   'user-read-private',
+  'user-library-read',
+  'user-library-modify',
 ];
 
 function generateRandomString(length: number): string {
@@ -32,7 +34,7 @@ async function generateCodeChallenge(codeVerifier: string): Promise<string> {
 }
 
 // Check if we're in a browser environment
-const isBrowser = typeof window !== 'undefined' && typeof window.sessionStorage !== 'undefined';
+const isBrowser = typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
 
 export class SpotifyAuth {
   private static readonly CODE_VERIFIER_KEY = 'spotify_code_verifier';
@@ -49,8 +51,8 @@ export class SpotifyAuth {
     const state = generateRandomString(16);
     const codeChallenge = await generateCodeChallenge(codeVerifier);
 
-    sessionStorage.setItem(this.CODE_VERIFIER_KEY, codeVerifier);
-    sessionStorage.setItem(this.STATE_KEY, state);
+    localStorage.setItem(this.CODE_VERIFIER_KEY, codeVerifier);
+    localStorage.setItem(this.STATE_KEY, state);
 
     const params = new URLSearchParams({
       client_id: CLIENT_ID,
@@ -70,8 +72,8 @@ export class SpotifyAuth {
       throw new Error('Callback can only be handled in the browser');
     }
 
-    const savedState = sessionStorage.getItem(this.STATE_KEY);
-    const codeVerifier = sessionStorage.getItem(this.CODE_VERIFIER_KEY);
+    const savedState = localStorage.getItem(this.STATE_KEY);
+    const codeVerifier = localStorage.getItem(this.CODE_VERIFIER_KEY);
 
     if (!savedState || savedState !== state) {
       throw new Error('Invalid state parameter');
@@ -105,8 +107,8 @@ export class SpotifyAuth {
 
     // Clean up
     if (isBrowser) {
-      sessionStorage.removeItem(this.CODE_VERIFIER_KEY);
-      sessionStorage.removeItem(this.STATE_KEY);
+      localStorage.removeItem(this.CODE_VERIFIER_KEY);
+      localStorage.removeItem(this.STATE_KEY);
     }
 
     return tokens;
@@ -144,15 +146,15 @@ export class SpotifyAuth {
   static storeTokens(tokens: SpotifyTokenResponse): void {
     if (!isBrowser) return;
 
-    sessionStorage.setItem(this.TOKEN_KEY, JSON.stringify(tokens));
+    localStorage.setItem(this.TOKEN_KEY, JSON.stringify(tokens));
     const expiryTime = Date.now() + (tokens.expires_in * 1000);
-    sessionStorage.setItem(this.TOKEN_EXPIRY_KEY, expiryTime.toString());
+    localStorage.setItem(this.TOKEN_EXPIRY_KEY, expiryTime.toString());
   }
 
   static getAccessToken(): string | null {
     if (!isBrowser) return null;
 
-    const tokensStr = sessionStorage.getItem(this.TOKEN_KEY);
+    const tokensStr = localStorage.getItem(this.TOKEN_KEY);
     if (!tokensStr) return null;
 
     const tokens: SpotifyTokenResponse = JSON.parse(tokensStr);
@@ -162,7 +164,7 @@ export class SpotifyAuth {
   static getRefreshToken(): string | null {
     if (!isBrowser) return null;
 
-    const tokensStr = sessionStorage.getItem(this.TOKEN_KEY);
+    const tokensStr = localStorage.getItem(this.TOKEN_KEY);
     if (!tokensStr) return null;
 
     const tokens: SpotifyTokenResponse = JSON.parse(tokensStr);
@@ -172,7 +174,7 @@ export class SpotifyAuth {
   static isTokenExpired(): boolean {
     if (!isBrowser) return true;
 
-    const expiryStr = sessionStorage.getItem(this.TOKEN_EXPIRY_KEY);
+    const expiryStr = localStorage.getItem(this.TOKEN_EXPIRY_KEY);
     if (!expiryStr) return true;
 
     const expiry = parseInt(expiryStr, 10);
@@ -197,10 +199,10 @@ export class SpotifyAuth {
   static clearTokens(): void {
     if (!isBrowser) return;
 
-    sessionStorage.removeItem(this.TOKEN_KEY);
-    sessionStorage.removeItem(this.TOKEN_EXPIRY_KEY);
-    sessionStorage.removeItem(this.CODE_VERIFIER_KEY);
-    sessionStorage.removeItem(this.STATE_KEY);
+    localStorage.removeItem(this.TOKEN_KEY);
+    localStorage.removeItem(this.TOKEN_EXPIRY_KEY);
+    localStorage.removeItem(this.CODE_VERIFIER_KEY);
+    localStorage.removeItem(this.STATE_KEY);
   }
 
   static isAuthenticated(): boolean {

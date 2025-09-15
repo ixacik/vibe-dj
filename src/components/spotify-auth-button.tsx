@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Music, LogOut, User, Loader2 } from 'lucide-react';
+import { SpotifyLogo } from '@/components/spotify-logo';
 import { useSpotifyStore } from '@/stores/spotify-store';
 import { useEffect } from 'react';
 
@@ -40,8 +41,8 @@ export function SpotifyAuthButton() {
 
   if (!isAuthenticated) {
     return (
-      <Button onClick={login} variant="default" className="bg-green-600 hover:bg-green-700">
-        <Music className="mr-2 h-4 w-4" />
+      <Button onClick={login} variant="default" className="bg-[#1DB954] hover:bg-[#1ed760] text-white">
+        <SpotifyLogo className="h-4 w-4" />
         Connect Spotify
       </Button>
     );

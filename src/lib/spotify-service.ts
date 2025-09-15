@@ -176,31 +176,130 @@ export class SpotifyService {
   }
 
   async addMultipleToQueue(tracks: Array<{ artist: string; title: string }>): Promise<Array<{ success: boolean; track?: SpotifyTrack; error?: string }>> {
-    const results = [];
-
-    for (const { artist, title } of tracks) {
+    // Step 1: Search for all tracks in parallel
+    const searchPromises = tracks.map(async ({ artist, title }) => {
       try {
         const track = await this.searchTrackByArtistAndTitle(artist, title);
-        if (track) {
-          await this.addToQueue(track.uri);
-          results.push({ success: true, track });
-          // Add small delay to avoid rate limiting
-          await new Promise(resolve => setTimeout(resolve, 100));
-        } else {
-          results.push({
-            success: false,
-            error: `Track not found: ${artist} - ${title}`
-          });
-        }
+        return {
+          success: !!track,
+          track,
+          artist,
+          title,
+          error: track ? undefined : `Track not found: ${artist} - ${title}`
+        };
       } catch (error) {
-        results.push({
+        return {
           success: false,
+          track: undefined,
+          artist,
+          title,
           error: error instanceof Error ? error.message : 'Unknown error'
-        });
+        };
       }
-    }
+    });
 
-    return results;
+    const searchResults = await Promise.all(searchPromises);
+
+    // Step 2: Add found tracks to queue in parallel
+    const queuePromises = searchResults.map(async (result) => {
+      if (result.success && result.track) {
+        try {
+          await this.addToQueue(result.track.uri);
+          return {
+            success: true,
+            track: result.track
+          };
+        } catch (error) {
+          return {
+            success: false,
+            track: result.track,
+            error: error instanceof Error ? error.message : 'Failed to add to queue'
+          };
+        }
+      }
+      return {
+        success: false,
+        error: result.error
+      };
+    });
+
+    return Promise.all(queuePromises);
+  }
+
+  /**
+   * Save tracks to user's library (like songs)
+   */
+  async saveTracks(trackIds: string[]): Promise<void> {
+    try {
+      // Spotify API accepts max 50 tracks per request
+      const chunks = [];
+      for (let i = 0; i < trackIds.length; i += 50) {
+        chunks.push(trackIds.slice(i, i + 50));
+      }
+
+      await Promise.all(
+        chunks.map(chunk =>
+          this.api.put('/me/tracks', { ids: chunk })
+        )
+      );
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const spotifyError = error.response?.data as SpotifyError;
+        throw new Error(spotifyError?.error?.message || 'Failed to save tracks');
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Remove tracks from user's library
+   */
+  async removeSavedTracks(trackIds: string[]): Promise<void> {
+    try {
+      // Spotify API accepts max 50 tracks per request
+      const chunks = [];
+      for (let i = 0; i < trackIds.length; i += 50) {
+        chunks.push(trackIds.slice(i, i + 50));
+      }
+
+      await Promise.all(
+        chunks.map(chunk =>
+          this.api.delete('/me/tracks', { data: { ids: chunk } })
+        )
+      );
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const spotifyError = error.response?.data as SpotifyError;
+        throw new Error(spotifyError?.error?.message || 'Failed to remove tracks');
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Check if tracks are saved in user's library
+   */
+  async checkSavedTracks(trackIds: string[]): Promise<boolean[]> {
+    try {
+      // Spotify API accepts max 50 tracks per request
+      const results: boolean[] = [];
+
+      for (let i = 0; i < trackIds.length; i += 50) {
+        const chunk = trackIds.slice(i, i + 50);
+        const response = await this.api.get<boolean[]>('/me/tracks/contains', {
+          params: { ids: chunk.join(',') }
+        });
+        results.push(...response.data);
+      }
+
+      return results;
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const spotifyError = error.response?.data as SpotifyError;
+        throw new Error(spotifyError?.error?.message || 'Failed to check saved tracks');
+      }
+      throw error;
+    }
   }
 
   /**
