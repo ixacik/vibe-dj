@@ -43,6 +43,21 @@ interface SpotifyStore {
   clearQueueResults: () => void;
 }
 
+// Helper to get stored tokens from localStorage
+const getStoredTokens = (): Partial<SpotifyStore> => {
+  if (typeof window === 'undefined') return {};
+
+  const token = localStorage.getItem('spotify_provider_token');
+  const refreshToken = localStorage.getItem('spotify_provider_refresh_token');
+  const expiresAt = localStorage.getItem('spotify_token_expires_at');
+
+  return {
+    providerToken: token,
+    providerRefreshToken: refreshToken,
+    tokenExpiresAt: expiresAt ? parseInt(expiresAt, 10) : null
+  };
+};
+
 export const useSpotifyStore = create<SpotifyStore>((set, get) => ({
   // Initial state
   isAuthenticated: false,
@@ -52,10 +67,11 @@ export const useSpotifyStore = create<SpotifyStore>((set, get) => ({
   error: null,
   queueResults: [],
 
-  // Token management state
+  // Token management state - initialize from localStorage
   providerToken: null,
   providerRefreshToken: null,
   tokenExpiresAt: null,
+  ...getStoredTokens(),
 
   // Setters
   setSession: (session) => set({
@@ -73,13 +89,19 @@ export const useSpotifyStore = create<SpotifyStore>((set, get) => ({
 
   // Token helpers
   isTokenExpired: () => {
-    const expiresAt = get().tokenExpiresAt;
+    const expiresAt = get().tokenExpiresAt ||
+      (typeof window !== 'undefined' && localStorage.getItem('spotify_token_expires_at')
+        ? parseInt(localStorage.getItem('spotify_token_expires_at')!, 10)
+        : null);
     if (!expiresAt) return true;
     return Date.now() >= expiresAt;
   },
 
   isTokenExpiringSoon: () => {
-    const expiresAt = get().tokenExpiresAt;
+    const expiresAt = get().tokenExpiresAt ||
+      (typeof window !== 'undefined' && localStorage.getItem('spotify_token_expires_at')
+        ? parseInt(localStorage.getItem('spotify_token_expires_at')!, 10)
+        : null);
     if (!expiresAt) return true;
     // Consider expiring soon if less than 5 minutes left
     return Date.now() >= (expiresAt - 5 * 60 * 1000);

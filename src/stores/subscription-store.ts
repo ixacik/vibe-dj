@@ -31,7 +31,6 @@ interface SubscriptionState {
   // Actions
   fetchSubscription: () => Promise<void>;
   fetchUsage: () => Promise<void>;
-  incrementUsage: (model: "gpt-5" | "gpt-5-mini") => void;
   createCheckoutSession: (priceId: string) => Promise<string | null>;
   createPortalSession: () => Promise<string | null>;
   clearCache: () => void;
@@ -43,7 +42,7 @@ export const useSubscriptionTier = () => useSubscriptionStore((state) => state.s
 export const useSubscriptionUsage = () => useSubscriptionStore((state) => state.usage);
 export const useIsSubscriptionLoading = () => useSubscriptionStore((state) => state.isLoading);
 
-export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
+export const useSubscriptionStore = create<SubscriptionState>((set) => ({
   subscription: null,
   usage: null,
   isLoading: false,
@@ -65,11 +64,12 @@ export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
         .eq("user_id", user.id)
         .single();
 
-      if (error && error.code !== "PGRST116") { // Not found is ok
-        throw error;
+      // If table doesn't exist or no record found, default to free
+      if (error) {
+        console.log("Subscription fetch error (defaulting to free):", error.code);
       }
 
-      // Default to free tier if no subscription found
+      // Default to free tier if no subscription found or error
       const subscription = data || {
         user_id: user.id,
         tier: "free" as SubscriptionTier,
@@ -100,8 +100,9 @@ export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
         .eq("user_id", user.id)
         .single();
 
-      if (error && error.code !== "PGRST116") { // Not found is ok
-        throw error;
+      // If table doesn't exist or no record found, create default
+      if (error) {
+        console.log("Usage quota fetch error (initializing):", error.code);
       }
 
       // Initialize if doesn't exist or is from previous month
@@ -128,18 +129,6 @@ export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
     }
   },
 
-  incrementUsage: (model: "gpt-5" | "gpt-5-mini") => {
-    const { usage } = get();
-    if (!usage) return;
-
-    const updatedUsage = {
-      ...usage,
-      gpt5_mini_count: model === "gpt-5-mini" ? usage.gpt5_mini_count + 1 : usage.gpt5_mini_count,
-      gpt5_count: model === "gpt-5" ? usage.gpt5_count + 1 : usage.gpt5_count,
-    };
-
-    set({ usage: updatedUsage });
-  },
 
   createCheckoutSession: async (priceId: string) => {
     try {

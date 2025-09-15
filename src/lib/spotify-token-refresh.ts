@@ -71,15 +71,19 @@ export async function refreshSpotifyToken(refreshToken: string): Promise<string>
 export async function refreshTokenIfNeeded(): Promise<string | null> {
   const store = useSpotifyStore.getState();
 
-  // Check if we have a refresh token
-  const refreshToken = store.providerRefreshToken;
+  // Check if we have a refresh token (from store or localStorage)
+  const refreshToken = store.providerRefreshToken ||
+    (typeof window !== 'undefined' ? localStorage.getItem('spotify_provider_refresh_token') : null);
+
   if (!refreshToken) {
     return null;
   }
 
   // Check if token is expiring soon
   if (!store.isTokenExpiringSoon()) {
-    return store.providerToken;
+    // Return token from store or localStorage
+    return store.providerToken ||
+      (typeof window !== 'undefined' ? localStorage.getItem('spotify_provider_token') : null);
   }
 
   try {

@@ -96,7 +96,7 @@ export default function Home() {
 
   // Subscription store hooks
   const tier = useSubscriptionTier();
-  const { fetchSubscription, fetchUsage, incrementUsage, createPortalSession } = useSubscriptionStore();
+  const { fetchSubscription, fetchUsage, createPortalSession } = useSubscriptionStore();
 
   // Derive selected songs from IDs and all songs
   const selectedSongs = useMemo(() => {
@@ -328,10 +328,9 @@ export default function Home() {
         setLastRecommendations(recommendations);
         setIsLoading(false);
 
-        // Update usage for free tier
-        if (recommendations.usage && tier === "free") {
-          incrementUsage(selectedModel);
-        }
+        // Sync usage with backend after successful request
+        // The edge function has already updated the database, so we fetch the latest
+        await fetchUsage();
 
         // Track recommended songs
         const tracksToAdd = recommendations.recommendations.map((song) => ({
@@ -532,11 +531,12 @@ export default function Home() {
               </CardHeader>
               <CardContent className="flex-1 overflow-hidden flex flex-col">
                 {/* Queue Items - Fills available space */}
-                <div className="space-y-2 overflow-y-auto custom-scrollbar flex-1">
+                <div className="space-y-2 overflow-y-auto overflow-x-hidden custom-scrollbar flex-1">
                   {/* Currently Playing */}
                   {spotifyQueue?.currently_playing && (
-                    <div className="p-3 rounded-lg bg-primary/10 border border-primary/20">
-                      <div className="flex items-center gap-3">
+                    <div className="w-full overflow-hidden">
+                      <div className="p-3 rounded-lg bg-primary/10 border border-primary/20">
+                        <div className="flex items-center gap-3 min-w-0">
                         <div className="relative">
                           <img
                             src={
@@ -550,11 +550,11 @@ export default function Home() {
                             NOW
                           </Badge>
                         </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="font-medium text-sm truncate">
+                        <div className="flex-1 min-w-0 overflow-hidden">
+                          <p className="font-medium text-sm truncate overflow-hidden text-ellipsis whitespace-nowrap">
                             {spotifyQueue.currently_playing.name}
                           </p>
-                          <p className="text-xs text-muted-foreground truncate">
+                          <p className="text-xs text-muted-foreground truncate overflow-hidden text-ellipsis whitespace-nowrap">
                             {spotifyQueue.currently_playing.artists
                               .map((a) => a.name)
                               .join(", ")}
@@ -562,6 +562,7 @@ export default function Home() {
                         </div>
                         <HeartButton track={spotifyQueue.currently_playing} />
                         <AudioWaveform className="h-4 w-4 text-muted-foreground" />
+                        </div>
                       </div>
                     </div>
                   )}
@@ -603,13 +604,14 @@ export default function Home() {
                               </div>
                             </div>
                           )}
-                          <div
-                            className={`flex items-center justify-between p-3 rounded-lg transition-colors ${
-                              isOptimistic
-                                ? "bg-muted/30 opacity-60 cursor-wait"
-                                : "bg-muted/50 hover:bg-muted/70 cursor-pointer"
-                            }`}
-                            onClick={() => {
+                          <div className="w-full overflow-hidden">
+                            <div
+                              className={`flex items-center justify-between p-3 rounded-lg transition-colors ${
+                                isOptimistic
+                                  ? "bg-muted/30 opacity-60 cursor-wait"
+                                  : "bg-muted/50 hover:bg-muted/70 cursor-pointer"
+                              }`}
+                              onClick={() => {
                               if (
                                 !isOptimistic &&
                                 spotifyUser?.product === "premium"
@@ -626,7 +628,7 @@ export default function Home() {
                               }
                             }}
                           >
-                            <div className="flex items-center gap-3 flex-1">
+                            <div className="flex items-center gap-3 flex-1 min-w-0">
                               <div className="relative">
                                 <img
                                   src={
@@ -642,11 +644,11 @@ export default function Home() {
                                   </div>
                                 )}
                               </div>
-                              <div className="flex-1 min-w-0">
-                                <p className="font-medium text-sm truncate">
+                              <div className="flex-1 min-w-0 overflow-hidden">
+                                <p className="font-medium text-sm truncate overflow-hidden text-ellipsis whitespace-nowrap">
                                   {track.name}
                                 </p>
-                                <p className="text-xs text-muted-foreground truncate">
+                                <p className="text-xs text-muted-foreground truncate overflow-hidden text-ellipsis whitespace-nowrap">
                                   {track.artists.map((a) => a.name).join(", ")}
                                 </p>
                               </div>
@@ -660,6 +662,7 @@ export default function Home() {
                                   <Play className="h-3.5 w-3.5 text-muted-foreground fill-muted-foreground" />
                                 </>
                               )}
+                            </div>
                             </div>
                           </div>
                         </Fragment>

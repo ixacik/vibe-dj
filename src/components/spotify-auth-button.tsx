@@ -44,7 +44,7 @@ export function SpotifyAuthButton() {
 
   if (!isAuthenticated) {
     return (
-      <Button onClick={login} variant="default" className="bg-[#1DB954] hover:bg-[#1ed760] text-white">
+      <Button onClick={login} variant="default" className="bg-[#1DB954] hover:bg-[#1ed760] text-white h-9">
         <SpotifyLogo className="h-4 w-4" />
         Connect Spotify
       </Button>
@@ -53,9 +53,9 @@ export function SpotifyAuthButton() {
 
   if (!user) {
     // If there's an error, show reconnect button instead of loading forever
-    if (error && error.includes('expired')) {
+    if (error) {
       return (
-        <Button onClick={login} variant="destructive">
+        <Button onClick={login} variant="destructive" className="h-9">
           <SpotifyLogo className="h-4 w-4" />
           Reconnect Spotify
         </Button>

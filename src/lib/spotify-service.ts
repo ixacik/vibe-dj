@@ -26,8 +26,12 @@ export class SpotifyService {
     this.api.interceptors.request.use(async (config) => {
       const store = useSpotifyStore.getState();
 
+      // Get refresh token from store or localStorage
+      const refreshToken = store.providerRefreshToken ||
+        (typeof window !== 'undefined' ? localStorage.getItem('spotify_provider_refresh_token') : null);
+
       // Check if we need to refresh the token
-      if (store.isTokenExpiringSoon() && store.providerRefreshToken) {
+      if (store.isTokenExpiringSoon() && refreshToken) {
         try {
           // Import dynamically to avoid circular dependency
           const { refreshTokenIfNeeded } = await import('./spotify-token-refresh');
@@ -38,7 +42,8 @@ export class SpotifyService {
       }
 
       // Get the current token (either existing or just refreshed)
-      let token = store.providerToken;
+      let token = store.providerToken ||
+        (typeof window !== 'undefined' ? localStorage.getItem('spotify_provider_token') : null);
 
       // If still no token, try to get from Supabase
       if (!token) {
@@ -60,12 +65,16 @@ export class SpotifyService {
         if (error.response?.status === 401) {
           const store = useSpotifyStore.getState();
 
+          // Get refresh token from store or localStorage
+          const refreshToken = store.providerRefreshToken ||
+            (typeof window !== 'undefined' ? localStorage.getItem('spotify_provider_refresh_token') : null);
+
           // If we have a refresh token, try to refresh and retry
-          if (store.providerRefreshToken && error.config) {
+          if (refreshToken && error.config) {
             try {
               // Import dynamically to avoid circular dependency
-              const { refreshTokenIfNeeded } = await import('./spotify-token-refresh');
-              const newToken = await refreshTokenIfNeeded();
+              const { refreshSpotifyToken } = await import('./spotify-token-refresh');
+              const newToken = await refreshSpotifyToken(refreshToken);
               if (newToken) {
                 // Retry the request with the new token
                 error.config.headers.Authorization = `Bearer ${newToken}`;
@@ -80,6 +89,7 @@ export class SpotifyService {
           }
 
           // No refresh token available, session is truly expired
+          await store.logout();
           throw new Error('Spotify session expired. Please reconnect your Spotify account.');
         }
         throw error;

@@ -225,9 +225,9 @@ function VirtualSongList({
                 className="w-10 h-10 rounded flex-shrink-0"
               />
             )}
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{song.name}</p>
-              <p className="text-xs text-muted-foreground truncate">
+            <div className="flex-1 min-w-0 overflow-hidden">
+              <p className="text-sm font-medium truncate overflow-hidden text-ellipsis whitespace-nowrap">{song.name}</p>
+              <p className="text-xs text-muted-foreground truncate overflow-hidden text-ellipsis whitespace-nowrap">
                 {song.artist}
               </p>
             </div>
@@ -308,9 +308,9 @@ function VirtualSongList({
                     className="w-10 h-10 rounded flex-shrink-0"
                   />
                 )}
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate">{song.name}</p>
-                  <p className="text-xs text-muted-foreground truncate">
+                <div className="flex-1 min-w-0 overflow-hidden">
+                  <p className="text-sm font-medium truncate overflow-hidden text-ellipsis whitespace-nowrap">{song.name}</p>
+                  <p className="text-xs text-muted-foreground truncate overflow-hidden text-ellipsis whitespace-nowrap">
                     {song.artist}
                   </p>
                 </div>
