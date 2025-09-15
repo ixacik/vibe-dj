@@ -1,7 +1,8 @@
 import { create } from 'zustand';
-import { SpotifyAuth } from '@/lib/spotify-auth';
+import { SupabaseAuth } from '@/lib/supabase-auth';
 import { SpotifyService } from '@/lib/spotify-service';
 import type { SpotifyUser, SpotifyTrack } from '@/types/spotify';
+import type { Session } from '@supabase/supabase-js';
 
 interface QueueResult {
   track?: SpotifyTrack;
@@ -12,20 +13,21 @@ interface QueueResult {
 interface SpotifyStore {
   // State
   isAuthenticated: boolean;
+  session: Session | null;
   user: SpotifyUser | null;
   isLoading: boolean;
   error: string | null;
   queueResults: QueueResult[];
 
   // Actions
-  setAuthenticated: (value: boolean) => void;
+  setSession: (session: Session | null) => void;
   setUser: (user: SpotifyUser | null) => void;
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
 
   // Async actions
   login: () => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   fetchUserProfile: () => Promise<void>;
   addTracksToQueue: (tracks: Array<{ artist: string; title: string }>) => Promise<QueueResult[]>;
   clearQueueResults: () => void;
@@ -33,23 +35,28 @@ interface SpotifyStore {
 
 export const useSpotifyStore = create<SpotifyStore>((set, get) => ({
   // Initial state
-  isAuthenticated: SpotifyAuth.isAuthenticated(),
+  isAuthenticated: false,
+  session: null,
   user: null,
   isLoading: false,
   error: null,
   queueResults: [],
 
   // Setters
-  setAuthenticated: (value) => set({ isAuthenticated: value }),
+  setSession: (session) => set({
+    session,
+    isAuthenticated: !!session
+  }),
   setUser: (user) => set({ user }),
   setLoading: (loading) => set({ isLoading: loading }),
   setError: (error) => set({ error }),
+
 
   // Login
   login: async () => {
     set({ isLoading: true, error: null });
     try {
-      await SpotifyAuth.initiateAuth();
+      await SupabaseAuth.signInWithSpotify();
     } catch (error) {
       set({
         error: error instanceof Error ? error.message : 'Failed to initiate login',
@@ -59,14 +66,24 @@ export const useSpotifyStore = create<SpotifyStore>((set, get) => ({
   },
 
   // Logout
-  logout: () => {
-    SpotifyAuth.clearTokens();
-    set({
-      isAuthenticated: false,
-      user: null,
-      error: null,
-      queueResults: [],
-    });
+  logout: async () => {
+    set({ isLoading: true });
+    try {
+      await SupabaseAuth.signOut();
+      set({
+        isAuthenticated: false,
+        session: null,
+        user: null,
+        error: null,
+        queueResults: [],
+      });
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : 'Failed to sign out',
+      });
+    } finally {
+      set({ isLoading: false });
+    }
   },
 
   // Fetch user profile

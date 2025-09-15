@@ -1,38 +1,33 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { SpotifyAuth } from '@/lib/spotify-auth';
-import { useSpotifyStore } from '@/stores/spotify-store';
+import { SupabaseAuth } from '@/lib/supabase-auth';
 import { Loader2 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 
 export default function SpotifyCallback() {
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
-  const { setAuthenticated, fetchUserProfile } = useSpotifyStore();
 
   useEffect(() => {
     const handleCallback = async () => {
       const urlParams = new URLSearchParams(window.location.search);
       const code = urlParams.get('code');
-      const state = urlParams.get('state');
-      const error = urlParams.get('error');
+      const errorParam = urlParams.get('error');
 
-      if (error) {
-        setError(`Spotify authorization failed: ${error}`);
+      if (errorParam) {
+        setError(`Spotify authorization failed: ${errorParam}`);
         setTimeout(() => navigate('/'), 3000);
         return;
       }
 
-      if (!code || !state) {
-        setError('Invalid callback parameters');
+      if (!code) {
+        setError('No authorization code received');
         setTimeout(() => navigate('/'), 3000);
         return;
       }
 
       try {
-        await SpotifyAuth.handleCallback(code, state);
-        setAuthenticated(true);
-        await fetchUserProfile();
+        await SupabaseAuth.handleCallback(code);
         navigate('/');
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Authentication failed');
@@ -41,7 +36,7 @@ export default function SpotifyCallback() {
     };
 
     handleCallback();
-  }, [navigate, setAuthenticated, fetchUserProfile]);
+  }, [navigate]);
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4">

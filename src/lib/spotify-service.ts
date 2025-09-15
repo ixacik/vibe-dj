@@ -1,12 +1,13 @@
 import axios, { type AxiosInstance, type AxiosError } from 'axios';
-import { SpotifyAuth } from './spotify-auth';
+import { SupabaseAuth } from './supabase-auth';
 import type {
   SpotifyTrack,
   SpotifySearchResponse,
   SpotifyUser,
   SpotifyPlaybackState,
   SpotifyError,
-  SpotifyQueue
+  SpotifyQueue,
+  SavedTrackObject
 } from '@/types/spotify';
 
 const SPOTIFY_API_BASE = 'https://api.spotify.com/v1';
@@ -22,7 +23,10 @@ export class SpotifyService {
 
     // Add auth interceptor
     this.api.interceptors.request.use(async (config) => {
-      const token = await SpotifyAuth.getValidToken();
+      const token = await SupabaseAuth.getSpotifyToken();
+      if (!token) {
+        throw new Error('No Spotify access token available');
+      }
       config.headers.Authorization = `Bearer ${token}`;
       return config;
     });
@@ -33,16 +37,17 @@ export class SpotifyService {
       async (error: AxiosError<SpotifyError>) => {
         if (error.response?.status === 401) {
           try {
-            await SpotifyAuth.refreshToken();
-            // Retry the original request
-            const token = await SpotifyAuth.getValidToken();
-            if (error.config) {
+            // Try to refresh the session
+            await SupabaseAuth.refreshSession();
+
+            // Retry the original request with new token
+            const token = await SupabaseAuth.getSpotifyToken();
+            if (token && error.config) {
               error.config.headers.Authorization = `Bearer ${token}`;
               return this.api.request(error.config);
             }
           } catch (refreshError) {
-            // Refresh failed, need to re-authenticate
-            SpotifyAuth.clearTokens();
+            // Session refresh failed, user needs to re-authenticate
             throw new Error('Session expired. Please log in again.');
           }
         }
@@ -226,9 +231,6 @@ export class SpotifyService {
     return Promise.all(queuePromises);
   }
 
-  /**
-   * Save tracks to user's library (like songs)
-   */
   async saveTracks(trackIds: string[]): Promise<void> {
     try {
       // Spotify API accepts max 50 tracks per request
@@ -251,9 +253,6 @@ export class SpotifyService {
     }
   }
 
-  /**
-   * Remove tracks from user's library
-   */
   async removeSavedTracks(trackIds: string[]): Promise<void> {
     try {
       // Spotify API accepts max 50 tracks per request
@@ -276,9 +275,6 @@ export class SpotifyService {
     }
   }
 
-  /**
-   * Check if tracks are saved in user's library
-   */
   async checkSavedTracks(trackIds: string[]): Promise<boolean[]> {
     try {
       // Spotify API accepts max 50 tracks per request
@@ -302,10 +298,6 @@ export class SpotifyService {
     }
   }
 
-  /**
-   * Start playback on the user's active device
-   * If no track is specified, resumes current playback or starts from liked songs
-   */
   async startPlayback(trackUri?: string): Promise<void> {
     try {
       const endpoint = '/me/player/play';
@@ -344,9 +336,6 @@ export class SpotifyService {
     }
   }
 
-  /**
-   * Get available devices for playback
-   */
   async getDevices(): Promise<any> {
     try {
       const response = await this.api.get('/me/player/devices');
@@ -356,4 +345,24 @@ export class SpotifyService {
       return [];
     }
   }
+
+  async getLikedSongs(limit: number = 50, offset: number = 0): Promise<{
+    items: SavedTrackObject[];
+    total: number;
+    next: string | null;
+  }> {
+    try {
+      const response = await this.api.get('/me/tracks', {
+        params: { limit, offset }
+      });
+      return response.data;
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const spotifyError = error.response?.data as SpotifyError;
+        throw new Error(spotifyError?.error?.message || 'Failed to fetch liked songs');
+      }
+      throw error;
+    }
+  }
+
 }

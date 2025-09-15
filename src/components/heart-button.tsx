@@ -1,8 +1,9 @@
 import { Heart } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { useLovedSongsStore } from '@/stores/loved-songs-store';
+import { useIsTrackLiked } from '@/hooks/useTracksLikedStatus';
 import { SpotifyService } from '@/lib/spotify-service';
+import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { SpotifyTrack } from '@/types/spotify';
 
@@ -12,8 +13,8 @@ interface HeartButtonProps {
 }
 
 export function HeartButton({ track, className }: HeartButtonProps) {
-  const { isLoved, toggleLoved } = useLovedSongsStore();
-  const loved = isLoved(track.id);
+  const queryClient = useQueryClient();
+  const isLiked = useIsTrackLiked(track.id);
 
   const handleToggle = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -21,36 +22,22 @@ export function HeartButton({ track, className }: HeartButtonProps) {
     try {
       const spotify = SpotifyService.getInstance();
 
-      if (loved) {
+      if (isLiked) {
         await spotify.removeSavedTracks([track.id]);
-        toggleLoved({
-          id: track.id,
-          name: track.name,
-          artist: track.artists[0].name,
-          album: track.album.name,
-          albumArt: track.album.images[0]?.url
-        });
+        toast.success('Removed from Liked Songs');
       } else {
         await spotify.saveTracks([track.id]);
-        toggleLoved({
-          id: track.id,
-          name: track.name,
-          artist: track.artists[0].name,
-          album: track.album.name,
-          albumArt: track.album.images[0]?.url
-        });
+        toast.success('Added to Liked Songs');
       }
+
+      // Invalidate both the liked status and the liked songs list
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['tracks-liked-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['liked-songs'] }),
+      ]);
     } catch (error) {
       console.error('Failed to update Spotify library:', error);
       toast.error('Failed to update your Spotify library');
-      // Still toggle local state even if Spotify fails
-      toggleLoved({
-        id: track.id,
-        name: track.name,
-        artist: track.artists[0].name,
-        album: track.album.name,
-        albumArt: track.album.images[0]?.url
-      });
     }
   };
 
@@ -64,7 +51,7 @@ export function HeartButton({ track, className }: HeartButtonProps) {
       <Heart
         className={cn(
           "h-4 w-4 transition-colors",
-          loved ? "fill-red-500 text-red-500" : "text-muted-foreground"
+          isLiked ? "fill-red-500 text-red-500" : "text-muted-foreground"
         )}
       />
     </Button>

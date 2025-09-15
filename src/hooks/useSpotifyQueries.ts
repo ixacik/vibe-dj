@@ -3,7 +3,8 @@ import { useEffect, useRef } from 'react';
 import { SpotifyService } from '@/lib/spotify-service';
 import { useSpotifyStore } from '@/stores/spotify-store';
 import { useQueueTrackingStore } from '@/stores/queue-tracking-store';
-import type { SpotifyQueue, EnhancedSpotifyQueue, EnhancedSpotifyTrack } from '@/types/spotify';
+import { usePromptGroupsStore } from '@/stores/prompt-groups-store';
+import type { SpotifyQueue, EnhancedSpotifyQueue, EnhancedSpotifyTrack, SpotifyTrack } from '@/types/spotify';
 
 // Shared skip state to coordinate between hooks
 let globalIsSkipping = false;
@@ -35,7 +36,8 @@ function filterUserQueue(queue: SpotifyQueue | null, isUserQueued: (id: string) 
  */
 export function useSpotifyQueue() {
   const isAuthenticated = useSpotifyStore(state => state.isAuthenticated);
-  const { isUserQueued, cleanupOldTracks, userQueuedTracks } = useQueueTrackingStore();
+  const { isUserQueued, cleanupOldTracks } = useQueueTrackingStore();
+  const { getTrackPromptGroup, cleanupEmptyGroups } = usePromptGroupsStore();
   const queryClient = useQueryClient();
 
   return useQuery({
@@ -50,34 +52,34 @@ export function useSpotifyQueue() {
       const spotify = SpotifyService.getInstance();
       const queue = await spotify.getQueue();
 
-      // Clean up old tracks periodically
+      // Clean up old tracks and empty groups periodically
       cleanupOldTracks();
+      cleanupEmptyGroups();
 
       // Filter to only show user-added tracks
       const filteredQueue = filterUserQueue(queue, isUserQueued);
 
-      // Enhance queue items with prompt summaries from our tracking
+      // Enhance queue items with prompt group info
       if (filteredQueue) {
-        // Sort tracked items by addedAt (newest first) to get most recent entry
-        const sortedTrackedItems = [...userQueuedTracks].sort((a, b) => b.addedAt - a.addedAt);
-
         // Enhance queue tracks
         if (filteredQueue.queue) {
           filteredQueue.queue = filteredQueue.queue.map(track => {
-            const trackedItem = sortedTrackedItems.find(t => t.id === track.id);
+            const promptGroup = getTrackPromptGroup(track.id);
             return {
               ...track,
-              promptSummary: trackedItem?.promptSummary
+              promptGroupId: promptGroup?.id,
+              promptSummary: promptGroup?.summary
             };
           });
         }
 
         // Enhance currently playing track
         if (filteredQueue.currently_playing) {
-          const trackedItem = sortedTrackedItems.find(t => t.id === filteredQueue.currently_playing!.id);
+          const promptGroup = getTrackPromptGroup(filteredQueue.currently_playing.id);
           filteredQueue.currently_playing = {
             ...filteredQueue.currently_playing,
-            promptSummary: trackedItem?.promptSummary
+            promptGroupId: promptGroup?.id,
+            promptSummary: promptGroup?.summary
           };
         }
       }
@@ -103,6 +105,7 @@ export function useSpotifyQueue() {
 export function useSpotifyPlayback() {
   const isAuthenticated = useSpotifyStore(state => state.isAuthenticated);
   const { removeQueuedTrack } = useQueueTrackingStore();
+  const { removeTrackFromGroups, getTrackPromptGroup, setActiveGroup } = usePromptGroupsStore();
   const lastPlayingTrackId = useRef<string | null>(null);
 
   const query = useQuery({
@@ -116,18 +119,24 @@ export function useSpotifyPlayback() {
     staleTime: 3000,
   });
 
-  // Track currently playing track ID and remove from queue tracking
+  // Track currently playing track ID and update active prompt group
   useEffect(() => {
     if (query.data?.item && 'id' in query.data.item) {
       const currentTrackId = query.data.item.id;
       // Only process if track changed
       if (currentTrackId !== lastPlayingTrackId.current) {
         lastPlayingTrackId.current = currentTrackId;
+
+        // Get and set the active prompt group
+        const promptGroup = getTrackPromptGroup(currentTrackId);
+        setActiveGroup(promptGroup?.id || null);
+
         // Remove from our tracking since it's now playing
         removeQueuedTrack(currentTrackId);
+        removeTrackFromGroups(currentTrackId);
       }
     }
-  }, [query.data, removeQueuedTrack]);
+  }, [query.data, removeQueuedTrack, removeTrackFromGroups, getTrackPromptGroup, setActiveGroup]);
 
   return query;
 }
@@ -217,6 +226,7 @@ export function useAddToQueue() {
   const queryClient = useQueryClient();
   const addTracksToQueue = useSpotifyStore(state => state.addTracksToQueue);
   const { addQueuedTracks } = useQueueTrackingStore();
+  const { createPromptGroup } = usePromptGroupsStore();
 
   return useMutation({
     mutationFn: async ({ tracks, promptSummary }: { tracks: Array<{ artist: string; title: string }>, promptSummary?: string }) => {
@@ -239,6 +249,17 @@ export function useAddToQueue() {
 
       const results = await addTracksToQueue(tracks);
 
+      // Get successfully added track IDs
+      const successfulTrackIds = results
+        .filter(r => r.success && r.track)
+        .map(r => r.track!.id);
+
+      // Create prompt group if we have a summary and successful tracks
+      if (promptSummary && successfulTrackIds.length > 0) {
+        const isAutoGenerated = promptSummary.startsWith('Auto:');
+        createPromptGroup(promptSummary, successfulTrackIds, isAutoGenerated);
+      }
+
       // Track successfully added items
       const successfulTracks = results
         .filter(r => r.success && r.track)
@@ -256,9 +277,86 @@ export function useAddToQueue() {
 
       return results;
     },
-    onSuccess: () => {
-      // Invalidate queue to refetch latest state
-      queryClient.invalidateQueries({ queryKey: ['spotify', 'queue'] });
+    onMutate: async ({ tracks, promptSummary }) => {
+      // Cancel any outgoing refetches to prevent them from overwriting our optimistic update
+      await queryClient.cancelQueries({ queryKey: ['spotify', 'queue'] });
+
+      // Snapshot the previous value for rollback
+      const previousQueue = queryClient.getQueryData<EnhancedSpotifyQueue>(['spotify', 'queue']);
+
+      // Search for tracks first to get full metadata including album art
+      const spotify = SpotifyService.getInstance();
+      const searchPromises = tracks.map(async ({ artist, title }) => {
+        try {
+          const track = await spotify.searchTrackByArtistAndTitle(artist, title);
+          return track;
+        } catch {
+          // Return placeholder if search fails
+          return {
+            id: `optimistic-${Date.now()}-${Math.random()}`,
+            name: title,
+            artists: [{ name: artist, id: '' }],
+            album: {
+              name: 'Loading...',
+              images: [{ url: '/vinyl-disc.svg', height: 64, width: 64 }],
+              id: '',
+            },
+            uri: '',
+            duration_ms: 0,
+            popularity: 0,
+            _optimistic: true,
+          } as unknown as SpotifyTrack & { _optimistic: boolean };
+        }
+      });
+
+      const searchResults = await Promise.all(searchPromises);
+
+      // Create optimistic group ID
+      const optimisticGroupId = `optimistic-${Date.now()}`;
+
+      // Create optimistic tracks with full metadata
+      const optimisticTracks = searchResults
+        .filter(Boolean)
+        .map((track: any) => ({
+          ...track,
+          promptGroupId: optimisticGroupId,
+          promptSummary: promptSummary,
+          _optimistic: true,
+        })) as EnhancedSpotifyTrack[];
+
+      // Optimistically update the queue by adding new tracks
+      if (previousQueue) {
+        queryClient.setQueryData<EnhancedSpotifyQueue>(['spotify', 'queue'], {
+          ...previousQueue,
+          queue: [...(previousQueue.queue || []), ...optimisticTracks],
+        });
+      }
+
+      // Return context for potential rollback
+      return { previousQueue, optimisticTracks };
+    },
+    onError: (_err, _variables, context) => {
+      // Rollback to previous state on error
+      if (context?.previousQueue) {
+        queryClient.setQueryData(['spotify', 'queue'], context.previousQueue);
+      }
+    },
+    onSettled: (_data, _error, _variables, context) => {
+      // After mutation settles (success or error), sync with server
+      // Use a small delay to ensure Spotify's API has updated
+      setTimeout(() => {
+        // First, remove optimistic tracks before refetching
+        const currentQueue = queryClient.getQueryData<EnhancedSpotifyQueue>(['spotify', 'queue']);
+        if (currentQueue && context?.optimisticTracks) {
+          const optimisticIds = new Set(context.optimisticTracks.map(t => t.id));
+          queryClient.setQueryData<EnhancedSpotifyQueue>(['spotify', 'queue'], {
+            ...currentQueue,
+            queue: currentQueue.queue.filter(t => !optimisticIds.has(t.id) || !t._optimistic),
+          });
+        }
+        // Then invalidate to get fresh data
+        queryClient.invalidateQueries({ queryKey: ['spotify', 'queue'] });
+      }, 500);
     },
   });
 }

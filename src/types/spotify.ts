@@ -29,6 +29,8 @@ export interface SpotifyTrack {
 
 export interface EnhancedSpotifyTrack extends SpotifyTrack {
   promptSummary?: string;
+  promptGroupId?: string;
+  _optimistic?: boolean;
 }
 
 export interface SpotifySearchResponse {
@@ -84,4 +86,9 @@ export interface SpotifyQueue {
 export interface EnhancedSpotifyQueue {
   currently_playing: EnhancedSpotifyTrack | null;
   queue: EnhancedSpotifyTrack[];
+}
+
+export interface SavedTrackObject {
+  added_at: string;
+  track: SpotifyTrack;
 }

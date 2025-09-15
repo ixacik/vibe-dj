@@ -43,11 +43,12 @@ import {
 import { AudioWaveform } from "@/components/audio-waveform";
 import { VinylDisc } from "@/components/vinyl-disc";
 import { HeartButton } from "@/components/heart-button";
-import { LovedSongsCard } from "@/components/loved-songs-card";
-import { useLovedSongsStore } from "@/stores/loved-songs-store";
+import { LikedSongsCard } from "@/components/liked-songs-card";
+import { useSelectedSongs } from "@/contexts/selected-songs-context";
+import { useLikedSongs } from "@/hooks/useLikedSongs";
 import { useModelStore } from "@/stores/model-store";
-import { useState, useEffect, Fragment, useCallback } from "react";
-import { openAIService, type SongRecommendation } from "@/lib/openai-service";
+import { useState, useEffect, Fragment, useCallback, useMemo } from "react";
+import { OpenAIService, type SongRecommendation } from "@/lib/openai-service";
 import { useSpotifyStore } from "@/stores/spotify-store";
 import { useAutoModeStore } from "@/stores/auto-mode-store";
 import { useConversationHistory } from "@/hooks/useConversationHistory";
@@ -83,11 +84,15 @@ export default function Home() {
     lastAutoPromptSummary,
     setLastAutoPrompt,
   } = useAutoModeStore();
-  const getSelectedSongs = useLovedSongsStore(
-    (state) => state.getSelectedSongs
-  );
+  const { selectedSongIds } = useSelectedSongs();
+  const { allSongs } = useLikedSongs();
   const selectedModel = useModelStore((state) => state.selectedModel);
   const setSelectedModel = useModelStore((state) => state.setSelectedModel);
+
+  // Derive selected songs from IDs and all songs
+  const selectedSongs = useMemo(() => {
+    return allSongs.filter(song => selectedSongIds.has(song.id));
+  }, [allSongs, selectedSongIds]);
 
   // TanStack Query hooks for Spotify data
   const { data: spotifyQueue } = useSpotifyQueue();
@@ -120,7 +125,6 @@ export default function Home() {
       const storedKey = localStorage.getItem("openai_api_key");
       if (storedKey) {
         setApiKey(storedKey);
-        openAIService.initialize(storedKey);
       }
     }
   }, []);
@@ -152,12 +156,14 @@ export default function Home() {
       const recentTracks = getRecentTracks();
 
       // Get AI recommendations - only pass selected songs
-      const selectedSongs = getSelectedSongs();
-      const recommendations = await openAIService.getSongRecommendations(
+      const recommendations = await OpenAIService.getSongRecommendations(
         "Continue the vibe",
         conversationHistory,
         recentTracks,
-        selectedSongs.map((song) => ({ artist: song.artist, title: song.name })),
+        selectedSongs.map((song) => ({
+          artist: song.artist,
+          title: song.name,
+        })),
         selectedModel
       );
 
@@ -232,20 +238,20 @@ export default function Home() {
 
     const currentTrack =
       spotifyQueue?.currently_playing as EnhancedSpotifyTrack | null;
-    if (!currentTrack?.promptSummary) return;
+    if (!currentTrack?.promptGroupId || !currentTrack?.promptSummary) return;
 
     // Don't trigger for auto-generated prompts to prevent infinite loops
     if (currentTrack.promptSummary.startsWith("Auto:")) return;
 
     // Check if this is the last track of its prompt group
-    const remainingFromPrompt = (spotifyQueue?.queue || []).filter(
+    const remainingFromGroup = (spotifyQueue?.queue || []).filter(
       (t) =>
-        (t as EnhancedSpotifyTrack).promptSummary === currentTrack.promptSummary
+        (t as EnhancedSpotifyTrack).promptGroupId === currentTrack.promptGroupId
     );
 
-    // If no more tracks from this prompt and we haven't already triggered for this prompt
+    // If no more tracks from this group and we haven't already triggered for this group
     if (
-      remainingFromPrompt.length === 0 &&
+      remainingFromGroup.length === 0 &&
       lastAutoPromptSummary !== currentTrack.promptSummary
     ) {
       setLastAutoPrompt(currentTrack.promptSummary);
@@ -269,7 +275,6 @@ export default function Home() {
       if (tempApiKey.trim()) {
         localStorage.setItem("openai_api_key", tempApiKey);
         setApiKey(tempApiKey);
-        openAIService.initialize(tempApiKey);
       } else {
         // Clear the key if empty
         localStorage.removeItem("openai_api_key");
@@ -324,7 +329,7 @@ export default function Home() {
       // Clear input immediately for better UX
       setInputValue("");
       // Reset textarea height
-      const textarea = document.querySelector('textarea');
+      const textarea = document.querySelector("textarea");
       if (textarea) {
         textarea.style.height = "36px";
       }
@@ -341,8 +346,7 @@ export default function Home() {
         const recentTracks = getRecentTracks();
 
         // Get AI recommendations - only pass selected songs
-        const selectedSongs = getSelectedSongs();
-        const recommendations = await openAIService.getSongRecommendations(
+        const recommendations = await OpenAIService.getSongRecommendations(
           userMessage,
           conversationHistory,
           recentTracks,
@@ -445,8 +449,8 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-background p-4">
-      <div className="max-w-6xl mx-auto flex flex-col gap-3">
+    <div className="min-h-screen bg-background flex items-center justify-center p-4">
+      <div className="max-w-6xl w-full flex flex-col gap-3">
         {/* Header with theme toggle and settings */}
         <div className="flex justify-between items-center">
           <div className="flex items-center gap-2">
@@ -475,18 +479,15 @@ export default function Home() {
           </div>
         </div>
 
-        {/* 2-column grid layout with auto-stretching */}
-        <div className="grid grid-cols-1 lg:grid-cols-[350px_1fr] gap-3 items-stretch">
-          {/* Left column: Loved Songs - stretches to match right column */}
-          <LovedSongsCard />
+        {/* 2-column grid layout with fixed height */}
+        <div className="grid grid-cols-1 lg:grid-cols-[350px_1fr] gap-3 h-[80vh]">
+          {/* Left column: Liked Songs - stretches to match right column */}
+          <LikedSongsCard />
 
           {/* Right column: Queue and Input stacked */}
           <div className="flex flex-col gap-3">
             {/* Current Queue Card - Fixed size */}
-            <Card
-              className="overflow-hidden flex flex-col"
-              style={{ height: "70vh" }}
-            >
+            <Card className="overflow-hidden flex flex-col h-full">
               {/* DJ Message at the top */}
               <div className="p-6 bg-gradient-to-r from-primary/10 to-primary/5 border-b">
                 <div className="flex items-start gap-3">
@@ -580,12 +581,15 @@ export default function Home() {
                           : null;
 
                       const showSeparator =
-                        currentTrack.promptSummary && // Has a prompt summary
-                        currentTrack.promptSummary !==
-                          currentlyPlaying?.promptSummary && // Not same as currently playing
+                        currentTrack.promptGroupId && // Has a prompt group
+                        currentTrack.promptGroupId !==
+                          currentlyPlaying?.promptGroupId && // Not same group as currently playing
                         (index === 0 || // First in queue
-                          currentTrack.promptSummary !==
-                            previousTrack?.promptSummary); // Different from previous
+                          currentTrack.promptGroupId !==
+                            previousTrack?.promptGroupId); // Different group from previous
+
+                      // Check if this is an optimistic track
+                      const isOptimistic = (track as any)._optimistic;
 
                       return (
                         <Fragment key={track.id}>
@@ -601,15 +605,22 @@ export default function Home() {
                             </div>
                           )}
                           <div
-                            className="flex items-center justify-between p-3 rounded-lg bg-muted/50 hover:bg-muted/70 cursor-pointer transition-colors"
+                            className={`flex items-center justify-between p-3 rounded-lg transition-colors ${
+                              isOptimistic
+                                ? "bg-muted/30 opacity-60 cursor-wait"
+                                : "bg-muted/50 hover:bg-muted/70 cursor-pointer"
+                            }`}
                             onClick={() => {
-                              if (spotifyUser?.product === "premium") {
+                              if (
+                                !isOptimistic &&
+                                spotifyUser?.product === "premium"
+                              ) {
                                 skipToTrackMutation.mutate(track.id, {
                                   onError: () => {
                                     toast.error("Failed to skip to track");
                                   },
                                 });
-                              } else {
+                              } else if (!isOptimistic) {
                                 toast.error(
                                   "Spotify Premium required to skip tracks"
                                 );
@@ -617,11 +628,21 @@ export default function Home() {
                             }}
                           >
                             <div className="flex items-center gap-3 flex-1">
-                              <img
-                                src={track.album.images[0]?.url}
-                                alt={track.album.name}
-                                className="w-10 h-10 rounded"
-                              />
+                              <div className="relative">
+                                <img
+                                  src={
+                                    track.album.images[0]?.url ||
+                                    "/vinyl-disc.svg"
+                                  }
+                                  alt={track.album.name}
+                                  className="w-10 h-10 rounded"
+                                />
+                                {isOptimistic && (
+                                  <div className="absolute inset-0 flex items-center justify-center">
+                                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                                  </div>
+                                )}
+                              </div>
                               <div className="flex-1 min-w-0">
                                 <p className="font-medium text-sm truncate">
                                   {track.name}
@@ -630,8 +651,16 @@ export default function Home() {
                                   {track.artists.map((a) => a.name).join(", ")}
                                 </p>
                               </div>
-                              <HeartButton track={track} />
-                              <Play className="h-3.5 w-3.5 text-muted-foreground fill-muted-foreground" />
+                              {isOptimistic ? (
+                                <Badge variant="outline" className="text-xs">
+                                  Adding...
+                                </Badge>
+                              ) : (
+                                <>
+                                  <HeartButton track={track} />
+                                  <Play className="h-3.5 w-3.5 text-muted-foreground fill-muted-foreground" />
+                                </>
+                              )}
                             </div>
                           </div>
                         </Fragment>
@@ -709,12 +738,13 @@ export default function Home() {
                         minHeight: "36px",
                         maxHeight: "80px",
                         height: "36px",
-                        lineHeight: "1.25"
+                        lineHeight: "1.25",
                       }}
                       onInput={(e) => {
                         const target = e.target as HTMLTextAreaElement;
                         target.style.height = "36px";
-                        target.style.height = Math.min(target.scrollHeight, 80) + "px";
+                        target.style.height =
+                          Math.min(target.scrollHeight, 80) + "px";
                       }}
                       disabled={
                         isLoading ||
@@ -747,7 +777,12 @@ export default function Home() {
                     </Button>
                   </div>
                   {/* Model selector */}
-                  <Select value={selectedModel} onValueChange={(value) => setSelectedModel(value as "gpt-5" | "gpt-5-mini")}>
+                  <Select
+                    value={selectedModel}
+                    onValueChange={(value) =>
+                      setSelectedModel(value as "gpt-5" | "gpt-5-mini")
+                    }
+                  >
                     <SelectTrigger className="w-[130px] h-9 shrink-0">
                       <SelectValue />
                     </SelectTrigger>
