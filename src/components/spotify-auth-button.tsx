@@ -9,9 +9,10 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Music, LogOut, User, Loader2 } from 'lucide-react';
+import { Music, LogOut, User, Loader2, Crown, Zap } from 'lucide-react';
 import { SpotifyLogo } from '@/components/spotify-logo';
 import { useSpotifyStore } from '@/stores/spotify-store';
+import { useSubscriptionTier } from '@/stores/subscription-store';
 import { useEffect } from 'react';
 
 export function SpotifyAuthButton() {
@@ -19,16 +20,18 @@ export function SpotifyAuthButton() {
     isAuthenticated,
     user,
     isLoading,
+    error,
     login,
     logout,
     fetchUserProfile,
   } = useSpotifyStore();
+  const tier = useSubscriptionTier();
 
   useEffect(() => {
-    if (isAuthenticated && !user) {
+    if (isAuthenticated && !user && !error) {
       fetchUserProfile();
     }
-  }, [isAuthenticated, user, fetchUserProfile]);
+  }, [isAuthenticated, user, error, fetchUserProfile]);
 
   if (isLoading) {
     return (
@@ -49,6 +52,16 @@ export function SpotifyAuthButton() {
   }
 
   if (!user) {
+    // If there's an error, show reconnect button instead of loading forever
+    if (error && error.includes('expired')) {
+      return (
+        <Button onClick={login} variant="destructive">
+          <SpotifyLogo className="h-4 w-4" />
+          Reconnect Spotify
+        </Button>
+      );
+    }
+
     return (
       <Button variant="outline" disabled>
         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -71,8 +84,22 @@ export function SpotifyAuthButton() {
             )}
           </Avatar>
           <span className="max-w-[150px] truncate">{user.display_name}</span>
-          {user.product === 'premium' && (
-            <Badge variant="secondary" className="ml-1">Premium</Badge>
+          {tier === "free" && (
+            <Badge variant="secondary" className="ml-1">
+              Free Tier
+            </Badge>
+          )}
+          {tier === "pro" && (
+            <Badge className="ml-1 bg-blue-600 text-white">
+              <Crown className="w-3 h-3 mr-1" />
+              Pro
+            </Badge>
+          )}
+          {tier === "ultra" && (
+            <Badge className="ml-1 bg-purple-600 text-white">
+              <Zap className="w-3 h-3 mr-1" />
+              Ultra
+            </Badge>
           )}
         </Button>
       </DropdownMenuTrigger>

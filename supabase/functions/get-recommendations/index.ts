@@ -1,10 +1,11 @@
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.4';
-import OpenAI from 'https://deno.land/x/openai@v4.24.0/mod.ts';
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
+import OpenAI from "https://deno.land/x/openai@v4.24.0/mod.ts";
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
 };
 
 interface RequestBody {
@@ -12,7 +13,7 @@ interface RequestBody {
   conversationHistory: Array<{ role: string; content: string }>;
   recentTracks: Array<{ artist: string; title: string }>;
   selectedSongs: Array<{ artist: string; title: string }>;
-  model: 'gpt-5' | 'gpt-4' | 'gpt-3.5-turbo';
+  model: "gpt-5" | "gpt-5-mini";
 }
 
 interface SongRecommendation {
@@ -27,153 +28,278 @@ interface SongRecommendation {
 
 serve(async (req) => {
   // Handle CORS preflight
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    // Get authorization header
-    const authHeader = req.headers.get('Authorization');
+    // Get authorization header (Supabase already verified the JWT)
+    const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
       return new Response(
-        JSON.stringify({ error: 'Missing authorization header' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ error: "Missing authorization header" }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
       );
     }
 
     // Initialize Supabase client
-    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+    const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Verify user JWT
-    const token = authHeader.replace('Bearer ', '');
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    // Get user from already-verified JWT
+    const token = authHeader.replace("Bearer ", "");
+    const {
+      data: { user },
+    } = await supabase.auth.getUser(token);
 
-    if (authError || !user) {
-      return new Response(
-        JSON.stringify({ error: 'Invalid token' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+    // User is guaranteed to exist here because Supabase already verified the JWT
+    if (!user) {
+      throw new Error("User not found");
     }
 
     // Parse request body
     const body: RequestBody = await req.json();
-    const { prompt, conversationHistory, recentTracks, selectedSongs, model } = body;
+    const { prompt, conversationHistory, recentTracks, selectedSongs, model } =
+      body;
+
+    // Check user's subscription tier
+    const { data: subscription } = await supabase
+      .from("subscriptions")
+      .select("tier, status")
+      .eq("user_id", user.id)
+      .single();
+
+    // Check current usage
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    let { data: quota } = await supabase
+      .from("usage_quotas")
+      .select("gpt5_mini_count, gpt5_count, period_start")
+      .eq("user_id", user.id)
+      .single();
+
+    // Initialize quota if it doesn't exist or if it's a new month
+    if (!quota || new Date(quota.period_start) < startOfMonth) {
+      const { data: newQuota } = await supabase
+        .from("usage_quotas")
+        .upsert({
+          user_id: user.id,
+          period_start: startOfMonth.toISOString(),
+          gpt5_mini_count: 0,
+          gpt5_count: 0,
+        }, {
+          onConflict: "user_id"
+        })
+        .select()
+        .single();
+      quota = newQuota;
+    }
+
+    // Determine effective tier (default to free if no subscription)
+    const tier = subscription?.tier || "free";
+    const subscriptionStatus = subscription?.status || "active";
+
+    // Check if subscription is active
+    if (subscriptionStatus !== "active" && subscriptionStatus !== "trialing") {
+      return new Response(
+        JSON.stringify({
+          error: "Your subscription is not active. Please update your payment method.",
+          code: "SUBSCRIPTION_INACTIVE"
+        }),
+        {
+          status: 402,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    // Enforce tier limits
+    if (tier === "free") {
+      if (model === "gpt-5-mini" && quota.gpt5_mini_count >= 10) {
+        return new Response(
+          JSON.stringify({
+            error: "You've reached your free tier limit of 10 GPT-5-mini requests this month. Please upgrade to Pro for unlimited access.",
+            code: "QUOTA_EXCEEDED",
+            usage: {
+              current: quota.gpt5_mini_count,
+              limit: 10
+            }
+          }),
+          {
+            status: 402,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
+        );
+      }
+      if (model === "gpt-5") {
+        return new Response(
+          JSON.stringify({
+            error: "GPT-5 is only available on the Ultra tier. Please upgrade to access this model.",
+            code: "TIER_REQUIRED"
+          }),
+          {
+            status: 402,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
+        );
+      }
+    }
+
+    if (tier === "pro" && model === "gpt-5") {
+      return new Response(
+        JSON.stringify({
+          error: "GPT-5 is only available on the Ultra tier. Please upgrade to access this model.",
+          code: "TIER_REQUIRED"
+        }),
+        {
+          status: 402,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
 
     // Initialize OpenAI
-    const openaiApiKey = Deno.env.get('OPENAI_API_KEY');
+    const openaiApiKey = Deno.env.get("OPENAI_API_KEY");
     if (!openaiApiKey) {
-      throw new Error('OpenAI API key not configured');
+      throw new Error("OpenAI API key not configured");
     }
 
     const openai = new OpenAI({ apiKey: openaiApiKey });
 
-    // Fetch user's loved songs from database
-    const { data: lovedSongs } = await supabase
-      .from('loved_songs')
-      .select('name, artist')
-      .eq('user_id', user.id)
-      .order('loved_at', { ascending: false })
-      .limit(50);
-
     // Build system prompt
     const systemPrompt = `You are VibeDJ, an AI music curator. Your goal is to recommend songs that match the user's request while maintaining a great listening experience.
 
-${selectedSongs.length > 0 ? `User's selected favorite songs for context:\n${selectedSongs.map(s => `- ${s.artist} - ${s.title}`).join('\n')}` : ''}
+${
+  selectedSongs.length > 0
+    ? `User's selected songs for context:\n${selectedSongs
+        .map((s) => `- ${s.artist} - ${s.title}`)
+        .join("\n")}`
+    : ""
+}
 
-${lovedSongs && lovedSongs.length > 0 ? `\nUser's recently loved songs:\n${lovedSongs.slice(0, 10).map(s => `- ${s.artist} - ${s.name}`).join('\n')}` : ''}
-
-${recentTracks.length > 0 ? `\nRecently played/queued tracks:\n${recentTracks.slice(0, 10).map(t => `- ${t.artist} - ${t.title}`).join('\n')}` : ''}
+${
+  recentTracks.length > 0
+    ? `\nRecently played/queued tracks (avoid recommending these):\n${recentTracks
+        .slice(0, 10)
+        .map((t) => `- ${t.artist} - ${t.title}`)
+        .join("\n")}`
+    : ""
+}
 
 Guidelines:
 - Recommend 3-5 songs that match the request
-- Consider the user's music taste from their loved songs
-- Avoid recommending songs that were recently played
+- Consider the user's selected songs for music taste context
+- Avoid recommending songs that were recently played or queued
 - Provide brief reasons for each recommendation
 - Be conversational and engaging`;
 
     // Build messages array
     const messages = [
-      { role: 'system' as const, content: systemPrompt },
+      { role: "system" as const, content: systemPrompt },
       ...conversationHistory.slice(-5), // Keep last 5 messages for context
-      { role: 'user' as const, content: prompt }
+      { role: "user" as const, content: prompt },
     ];
+
+    // Define structured output schema
+    const responseSchema = {
+      type: "json_schema" as const,
+      json_schema: {
+        name: "song_recommendations",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            recommendations: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  artist: { type: "string" },
+                  title: { type: "string" },
+                  reason: { type: "string" },
+                },
+                required: ["artist", "title", "reason"],
+                additionalProperties: false,
+              },
+            },
+            djMessage: { type: "string" },
+            promptSummary: { type: "string" },
+          },
+          required: ["recommendations", "djMessage", "promptSummary"],
+          additionalProperties: false,
+        },
+      },
+    };
 
     // Call OpenAI with structured output
     const completion = await openai.chat.completions.create({
-      model: model === 'gpt-5' ? 'gpt-4-turbo-preview' : model, // Fallback since gpt-5 doesn't exist
+      model: model, // Use model as-is (gpt-5, gpt-5-mini, etc)
       messages,
-      response_format: { type: 'json_object' },
-      temperature: 0.8,
-      max_tokens: 1000,
+      response_format: responseSchema,
     });
 
     const responseContent = completion.choices[0]?.message?.content;
     if (!responseContent) {
-      throw new Error('No response from OpenAI');
+      throw new Error("No response from OpenAI");
     }
 
     const recommendations: SongRecommendation = JSON.parse(responseContent);
 
-    // Store conversation in database
-    const { data: session } = await supabase
-      .from('user_sessions')
-      .select('id, conversation_history')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
+    // Log usage
+    const tokensUsed = completion.usage?.total_tokens || 0;
+    await supabase.from("usage_logs").insert({
+      user_id: user.id,
+      model: model,
+      tokens_used: tokensUsed,
+    });
 
-    if (session) {
-      // Update existing session
-      const updatedHistory = [
-        ...(session.conversation_history as any[]),
-        { role: 'user', content: prompt, timestamp: new Date().toISOString() },
-        { role: 'assistant', content: recommendations.djMessage, recommendations: recommendations.recommendations, timestamp: new Date().toISOString() }
-      ];
-
-      await supabase
-        .from('user_sessions')
-        .update({
-          conversation_history: updatedHistory,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', session.id);
-    } else {
-      // Create new session
-      await supabase
-        .from('user_sessions')
-        .insert({
-          user_id: user.id,
-          conversation_history: [
-            { role: 'user', content: prompt, timestamp: new Date().toISOString() },
-            { role: 'assistant', content: recommendations.djMessage, recommendations: recommendations.recommendations, timestamp: new Date().toISOString() }
-          ]
-        });
+    // Update usage quota for free tier
+    if (tier === "free") {
+      if (model === "gpt-5-mini") {
+        await supabase
+          .from("usage_quotas")
+          .update({
+            gpt5_mini_count: (quota?.gpt5_mini_count || 0) + 1,
+          })
+          .eq("user_id", user.id);
+      }
     }
 
-    return new Response(
-      JSON.stringify(recommendations),
-      {
-        status: 200,
-        headers: {
-          ...corsHeaders,
-          'Content-Type': 'application/json'
+    // Return recommendations with usage info for free tier
+    const response = tier === "free"
+      ? {
+          ...recommendations,
+          usage: {
+            model: model,
+            current: model === "gpt-5-mini" ? (quota?.gpt5_mini_count || 0) + 1 : 0,
+            limit: model === "gpt-5-mini" ? 10 : 0,
+            tier: tier
+          }
         }
-      }
-    );
+      : recommendations;
 
+    return new Response(JSON.stringify(response), {
+      status: 200,
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "application/json",
+      },
+    });
   } catch (error) {
-    console.error('Error in get-recommendations:', error);
+    console.error("Error in get-recommendations:", error);
     return new Response(
-      JSON.stringify({ error: error.message || 'Internal server error' }),
+      JSON.stringify({ error: error.message || "Internal server error" }),
       {
         status: 500,
         headers: {
           ...corsHeaders,
-          'Content-Type': 'application/json'
-        }
+          "Content-Type": "application/json",
+        },
       }
     );
   }

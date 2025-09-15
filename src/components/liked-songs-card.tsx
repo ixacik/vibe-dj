@@ -13,12 +13,13 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { useLikedSongs, type LikedSong } from "@/hooks/useLikedSongs";
 import { useSpotifyStore } from "@/stores/spotify-store";
-import { useSelectedSongs } from "@/contexts/selected-songs-context";
+import { useSelectedSongIds, useToggleSongSelection } from "@/stores/selected-songs-store";
 
 export function LikedSongsCard() {
   const [searchQuery, setSearchQuery] = useState("");
   const isAuthenticated = useSpotifyStore((state) => state.isAuthenticated);
-  const { selectedSongIds, toggleSongSelection } = useSelectedSongs();
+  const selectedSongIds = useSelectedSongIds();
+  const toggleSongSelection = useToggleSongSelection();
 
   const {
     allSongs,
@@ -65,8 +66,6 @@ export function LikedSongsCard() {
                 ? `${selectedSongIds.size} song${
                     selectedSongIds.size !== 1 ? "s" : ""
                   } in AI context`
-                : totalSongs > 0
-                ? `${totalSongs} songs in your library`
                 : "Tap songs to add them to AI context"}
             </CardDescription>
           </div>
@@ -191,11 +190,13 @@ function VirtualSongList({
   }, [filteredSongs, selectedSongs, selectedSongIds, searchQuery]);
 
   // Show separator only when we have both selected and non-selected songs
-  const showSeparator = selectedForDisplay.length > 0 && nonSelectedForDisplay.length > 0;
+  const showSeparator =
+    selectedForDisplay.length > 0 && nonSelectedForDisplay.length > 0;
 
   // Only virtualize non-selected songs (or all when searching)
   const virtualizedSongs = searchQuery ? filteredSongs : nonSelectedForDisplay;
-  const itemCount = virtualizedSongs.length + (isLoadingMore && !searchQuery ? 1 : 0);
+  const itemCount =
+    virtualizedSongs.length + (isLoadingMore && !searchQuery ? 1 : 0);
 
   const virtualizer = useVirtualizer({
     count: itemCount,

@@ -8,9 +8,40 @@ export interface SongRecommendation {
   }>;
   djMessage: string;
   promptSummary: string;
+  usage?: {
+    model: string;
+    current: number;
+    limit: number;
+    tier: string;
+  };
 }
 
 export type AIModel = "gpt-5" | "gpt-5-mini";
+
+export class QuotaExceededError extends Error {
+  code: string;
+  usage?: {
+    current: number;
+    limit: number;
+  };
+
+  constructor(message: string, code: string, usage?: { current: number; limit: number }) {
+    super(message);
+    this.name = "QuotaExceededError";
+    this.code = code;
+    this.usage = usage;
+  }
+}
+
+export class TierRequiredError extends Error {
+  code: string;
+
+  constructor(message: string, code: string) {
+    super(message);
+    this.name = "TierRequiredError";
+    this.code = code;
+  }
+}
 
 export class OpenAIService {
   static async getSongRecommendations(
@@ -50,6 +81,17 @@ export class OpenAIService {
         }),
       }
     );
+
+    if (response.status === 402) {
+      const error = await response.json();
+      if (error.code === "QUOTA_EXCEEDED") {
+        throw new QuotaExceededError(error.error, error.code, error.usage);
+      } else if (error.code === "TIER_REQUIRED") {
+        throw new TierRequiredError(error.error, error.code);
+      } else if (error.code === "SUBSCRIPTION_INACTIVE") {
+        throw new Error(error.error);
+      }
+    }
 
     if (!response.ok) {
       const error = await response

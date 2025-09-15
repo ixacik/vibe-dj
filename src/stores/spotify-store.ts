@@ -19,11 +19,21 @@ interface SpotifyStore {
   error: string | null;
   queueResults: QueueResult[];
 
+  // Token management
+  providerToken: string | null;
+  providerRefreshToken: string | null;
+  tokenExpiresAt: number | null;
+
   // Actions
   setSession: (session: Session | null) => void;
   setUser: (user: SpotifyUser | null) => void;
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
+  setProviderTokens: (token: string | null, refreshToken: string | null, expiresAt: number | null) => void;
+
+  // Token helpers
+  isTokenExpired: () => boolean;
+  isTokenExpiringSoon: () => boolean;
 
   // Async actions
   login: () => Promise<void>;
@@ -42,6 +52,11 @@ export const useSpotifyStore = create<SpotifyStore>((set, get) => ({
   error: null,
   queueResults: [],
 
+  // Token management state
+  providerToken: null,
+  providerRefreshToken: null,
+  tokenExpiresAt: null,
+
   // Setters
   setSession: (session) => set({
     session,
@@ -50,6 +65,25 @@ export const useSpotifyStore = create<SpotifyStore>((set, get) => ({
   setUser: (user) => set({ user }),
   setLoading: (loading) => set({ isLoading: loading }),
   setError: (error) => set({ error }),
+  setProviderTokens: (token, refreshToken, expiresAt) => set({
+    providerToken: token,
+    providerRefreshToken: refreshToken,
+    tokenExpiresAt: expiresAt
+  }),
+
+  // Token helpers
+  isTokenExpired: () => {
+    const expiresAt = get().tokenExpiresAt;
+    if (!expiresAt) return true;
+    return Date.now() >= expiresAt;
+  },
+
+  isTokenExpiringSoon: () => {
+    const expiresAt = get().tokenExpiresAt;
+    if (!expiresAt) return true;
+    // Consider expiring soon if less than 5 minutes left
+    return Date.now() >= (expiresAt - 5 * 60 * 1000);
+  },
 
 
   // Login
@@ -76,6 +110,10 @@ export const useSpotifyStore = create<SpotifyStore>((set, get) => ({
         user: null,
         error: null,
         queueResults: [],
+        // Clear token data
+        providerToken: null,
+        providerRefreshToken: null,
+        tokenExpiresAt: null,
       });
     } catch (error) {
       set({

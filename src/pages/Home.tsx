@@ -6,7 +6,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -16,7 +15,6 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
@@ -29,29 +27,37 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { SpotifyAuthButton } from "@/components/spotify-auth-button";
 import {
   Send,
-  Settings,
   Loader2,
   AlertCircle,
   Play,
-  Eye,
-  EyeOff,
-  Trash2,
   RotateCcw,
   PlayCircle,
   CheckCircle2,
+  Crown,
+  Zap,
+  CreditCard,
+  Check,
 } from "lucide-react";
 import { AudioWaveform } from "@/components/audio-waveform";
 import { VinylDisc } from "@/components/vinyl-disc";
 import { HeartButton } from "@/components/heart-button";
 import { LikedSongsCard } from "@/components/liked-songs-card";
-import { useSelectedSongs } from "@/contexts/selected-songs-context";
+import { UsageLimitBadge } from "@/components/usage-limit-badge";
+import { PricingModal } from "@/components/pricing-modal";
+import { useSelectedSongIds } from "@/stores/selected-songs-store";
 import { useLikedSongs } from "@/hooks/useLikedSongs";
 import { useModelStore } from "@/stores/model-store";
+import { useSubscriptionStore, useSubscriptionTier } from "@/stores/subscription-store";
 import { useState, useEffect, Fragment, useCallback, useMemo } from "react";
-import { OpenAIService, type SongRecommendation } from "@/lib/openai-service";
+import {
+  OpenAIService,
+  type SongRecommendation,
+  QuotaExceededError,
+  TierRequiredError
+} from "@/lib/openai-service";
 import { useSpotifyStore } from "@/stores/spotify-store";
 import { useAutoModeStore } from "@/stores/auto-mode-store";
-import { useConversationHistory } from "@/hooks/useConversationHistory";
+import { useConversationStore } from "@/stores/conversation-store";
 import { usePlayedTracks } from "@/hooks/usePlayedTracks";
 import {
   useSpotifyQueue,
@@ -68,11 +74,10 @@ export default function Home() {
     "Welcome! Request your favorite tracks and I'll add them to the queue!"
   );
   const [isLoading, setIsLoading] = useState(false);
-  const [showApiKeyDialog, setShowApiKeyDialog] = useState(false);
   const [showResetDialog, setShowResetDialog] = useState(false);
-  const [apiKey, setApiKey] = useState("");
-  const [tempApiKey, setTempApiKey] = useState("");
-  const [showApiKey, setShowApiKey] = useState(false);
+  const [showUpgradeDialog, setShowUpgradeDialog] = useState(false);
+  const [showPricingModal, setShowPricingModal] = useState(false);
+  const [upgradeMessage, setUpgradeMessage] = useState("");
   const [lastRecommendations, setLastRecommendations] =
     useState<SongRecommendation | null>(null);
 
@@ -84,14 +89,18 @@ export default function Home() {
     lastAutoPromptSummary,
     setLastAutoPrompt,
   } = useAutoModeStore();
-  const { selectedSongIds } = useSelectedSongs();
+  const selectedSongIds = useSelectedSongIds();
   const { allSongs } = useLikedSongs();
   const selectedModel = useModelStore((state) => state.selectedModel);
   const setSelectedModel = useModelStore((state) => state.setSelectedModel);
 
+  // Subscription store hooks
+  const tier = useSubscriptionTier();
+  const { fetchSubscription, fetchUsage, incrementUsage, createPortalSession } = useSubscriptionStore();
+
   // Derive selected songs from IDs and all songs
   const selectedSongs = useMemo(() => {
-    return allSongs.filter(song => selectedSongIds.has(song.id));
+    return allSongs.filter((song) => selectedSongIds.has(song.id));
   }, [allSongs, selectedSongIds]);
 
   // TanStack Query hooks for Spotify data
@@ -102,10 +111,10 @@ export default function Home() {
 
   // Conversation and play history hooks
   const { messages, addMessage, clearHistory, getFormattedHistory } =
-    useConversationHistory();
+    useConversationStore();
   const { addTracks, getRecentTracks, clearTracks } = usePlayedTracks();
 
-  // Load DJ message from conversation history on mount
+  // Load DJ message from conversation history on mount and fetch subscription
   useEffect(() => {
     if (typeof window !== "undefined" && messages.length > 0) {
       // Find the last assistant message in the conversation
@@ -117,30 +126,16 @@ export default function Home() {
         setDjMessage(lastAssistantMessage.content);
       }
     }
-  }, [messages]); // Re-run when messages change (on mount when loaded from localStorage)
 
-  useEffect(() => {
-    // Check if API key exists in localStorage
-    if (typeof window !== "undefined") {
-      const storedKey = localStorage.getItem("openai_api_key");
-      if (storedKey) {
-        setApiKey(storedKey);
-      }
-    }
-  }, []);
-
-  // Reset tempApiKey when dialog opens
-  useEffect(() => {
-    if (showApiKeyDialog) {
-      setTempApiKey(apiKey);
-      setShowApiKey(false);
-    }
-  }, [showApiKeyDialog, apiKey]);
+    // Fetch subscription status on mount
+    fetchSubscription();
+    fetchUsage();
+  }, [messages, fetchSubscription, fetchUsage]); // Re-run when messages change (on mount when loaded from localStorage)
 
   // Note: TanStack Query handles polling automatically based on authentication state
 
   const handleAutoContinue = useCallback(async () => {
-    if (!apiKey || isLoading) return;
+    if (isLoading) return;
 
     setIsLoading(true);
 
@@ -221,7 +216,6 @@ export default function Home() {
       setIsLoading(false);
     }
   }, [
-    apiKey,
     isLoading,
     addMessage,
     getFormattedHistory,
@@ -234,7 +228,7 @@ export default function Home() {
 
   // Auto-mode detection logic
   useEffect(() => {
-    if (!isAutoMode || !playbackState?.is_playing || !apiKey) return;
+    if (!isAutoMode || !playbackState?.is_playing) return;
 
     const currentTrack =
       spotifyQueue?.currently_playing as EnhancedSpotifyTrack | null;
@@ -263,34 +257,11 @@ export default function Home() {
   }, [
     spotifyQueue?.currently_playing,
     isAutoMode,
-    apiKey,
     lastAutoPromptSummary,
     handleAutoContinue,
     setLastAutoPrompt,
     spotifyQueue?.queue,
   ]);
-
-  const handleSaveApiKey = () => {
-    if (typeof window !== "undefined") {
-      if (tempApiKey.trim()) {
-        localStorage.setItem("openai_api_key", tempApiKey);
-        setApiKey(tempApiKey);
-      } else {
-        // Clear the key if empty
-        localStorage.removeItem("openai_api_key");
-        setApiKey("");
-      }
-      setShowApiKeyDialog(false);
-    }
-  };
-
-  const handleClearApiKey = () => {
-    setTempApiKey("");
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("openai_api_key");
-      setApiKey("");
-    }
-  };
 
   const handleResetSession = () => {
     // Clear conversation history
@@ -315,11 +286,6 @@ export default function Home() {
   };
 
   const handleSend = async () => {
-    if (!apiKey) {
-      setShowApiKeyDialog(true);
-      return;
-    }
-
     if (inputValue.trim()) {
       // Always reset to loading state for new requests
       setIsLoading(true);
@@ -361,6 +327,11 @@ export default function Home() {
         setDjMessage(recommendations.djMessage);
         setLastRecommendations(recommendations);
         setIsLoading(false);
+
+        // Update usage for free tier
+        if (recommendations.usage && tier === "free") {
+          incrementUsage(selectedModel);
+        }
 
         // Track recommended songs
         const tracksToAdd = recommendations.recommendations.map((song) => ({
@@ -432,9 +403,20 @@ export default function Home() {
         }
       } catch (error) {
         console.error("Error getting recommendations:", error);
-        setDjMessage(
-          "Sorry, I couldn't process that request. Please check your API key and try again."
-        );
+
+        if (error instanceof QuotaExceededError) {
+          setUpgradeMessage(error.message);
+          setShowUpgradeDialog(true);
+          setDjMessage("You've reached your free tier limit. Please upgrade to continue!");
+        } else if (error instanceof TierRequiredError) {
+          setUpgradeMessage(error.message);
+          setShowUpgradeDialog(true);
+          setDjMessage("This feature requires an upgrade. Check out our plans!");
+        } else {
+          setDjMessage(
+            "Sorry, I couldn't process that request. Please try again."
+          );
+        }
       } finally {
         setIsLoading(false);
       }
@@ -449,15 +431,38 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-4">
-      <div className="max-w-6xl w-full flex flex-col gap-3">
+    <div className="h-screen bg-background flex items-center justify-center p-4 overflow-hidden">
+      <div className="max-w-6xl w-full flex flex-col gap-3 h-[calc(80vh+3rem)]">
         {/* Header with theme toggle and settings */}
-        <div className="flex justify-between items-center">
-          <div className="flex items-center gap-2">
+        <div className="flex justify-between items-center flex-shrink-0">
+          <div className="flex items-center gap-3">
             <VinylDisc size={32} className="text-foreground" />
             <h1 className="text-2xl font-bold">VibeDJ</h1>
+            <UsageLimitBadge />
           </div>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            {tier === "free" && (
+              <Button
+                onClick={() => setShowPricingModal(true)}
+                className="bg-primary text-primary-foreground hover:bg-primary/90 border-0 h-9"
+              >
+                <Zap className="h-4 w-4 fill-current" />
+                Upgrade to Pro
+              </Button>
+            )}
+            {tier !== "free" && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  createPortalSession().then(url => {
+                    if (url) window.location.href = url;
+                  });
+                }}
+              >
+                <CreditCard className="h-4 w-4 mr-2" />
+                Manage Subscription
+              </Button>
+            )}
             <SpotifyAuthButton />
             <Button
               variant="outline"
@@ -467,29 +472,23 @@ export default function Home() {
             >
               <RotateCcw className="h-4 w-4" />
             </Button>
-            <Button
-              variant="outline"
-              size="icon"
-              onClick={() => setShowApiKeyDialog(true)}
-              title="API Settings"
-            >
-              <Settings className="h-4 w-4" />
-            </Button>
             <ThemeToggle />
           </div>
         </div>
 
         {/* 2-column grid layout with fixed height */}
-        <div className="grid grid-cols-1 lg:grid-cols-[350px_1fr] gap-3 h-[80vh]">
-          {/* Left column: Liked Songs - stretches to match right column */}
-          <LikedSongsCard />
+        <div className="grid grid-cols-1 lg:grid-cols-[350px_1fr] gap-3 h-[80vh] overflow-hidden">
+          {/* Left column: Liked Songs */}
+          <div className="flex flex-col gap-3 overflow-hidden">
+            <LikedSongsCard />
+          </div>
 
           {/* Right column: Queue and Input stacked */}
-          <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-3 overflow-hidden">
             {/* Current Queue Card - Fixed size */}
             <Card className="overflow-hidden flex flex-col h-full">
-              {/* DJ Message at the top */}
-              <div className="p-6 bg-gradient-to-r from-primary/10 to-primary/5 border-b">
+              {/* DJ Message at the top - flexible height with min/max constraints */}
+              <div className="p-6 bg-gradient-to-r from-primary/10 to-primary/5 border-b overflow-y-auto">
                 <div className="flex items-start gap-3">
                   <Badge
                     className={`mt-0.5 bg-primary text-primary-foreground ${
@@ -702,7 +701,7 @@ export default function Home() {
                         onClick={toggleAutoMode}
                         className="shrink-0 gap-1.5"
                         title={
-                          isAutoMode ? "Autoplay is ON" : "Autoplay is OFF"
+                          isAutoMode ? "Autoqueue is ON" : "Autoqueue is OFF"
                         }
                       >
                         <div className="relative w-4 h-4">
@@ -721,7 +720,7 @@ export default function Home() {
                             }`}
                           />
                         </div>
-                        Autoplay
+                        Autoqueue
                       </Button>
                     )}
                   <div className="relative flex-1 flex items-center">
@@ -811,11 +810,6 @@ export default function Home() {
         </div>
 
         <div className="space-y-2 mt-3">
-          {!apiKey && (
-            <p className="text-xs text-muted-foreground text-center">
-              Click the settings icon to add your OpenAI API key
-            </p>
-          )}
           {!isSpotifyAuthenticated && (
             <p className="text-xs text-muted-foreground text-center">
               Connect Spotify to automatically queue recommended songs
@@ -824,73 +818,6 @@ export default function Home() {
         </div>
       </div>
 
-      {/* API Key Dialog */}
-      <Dialog open={showApiKeyDialog} onOpenChange={setShowApiKeyDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>OpenAI API Settings</DialogTitle>
-            <DialogDescription>
-              Enter your OpenAI API key to enable AI-powered song
-              recommendations. Your key is stored locally in your browser.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="api-key">API Key</Label>
-              <div className="relative">
-                <Input
-                  id="api-key"
-                  type={showApiKey ? "text" : "password"}
-                  placeholder="sk-..."
-                  value={tempApiKey}
-                  onChange={(e) => setTempApiKey(e.target.value)}
-                  className="pr-20"
-                />
-                <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    onClick={() => setShowApiKey(!showApiKey)}
-                  >
-                    {showApiKey ? (
-                      <EyeOff className="h-4 w-4" />
-                    ) : (
-                      <Eye className="h-4 w-4" />
-                    )}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    onClick={handleClearApiKey}
-                    disabled={!tempApiKey}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-              {tempApiKey && !tempApiKey.startsWith("sk-") && (
-                <p className="text-xs text-destructive">
-                  API key should start with 'sk-'
-                </p>
-              )}
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button
-                variant="outline"
-                onClick={() => setShowApiKeyDialog(false)}
-              >
-                Cancel
-              </Button>
-              <Button onClick={handleSaveApiKey}>Save</Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
       {/* Reset Session Confirmation Dialog */}
       <Dialog open={showResetDialog} onOpenChange={setShowResetDialog}>
         <DialogContent>
@@ -898,7 +825,7 @@ export default function Home() {
             <DialogTitle>Reset Session</DialogTitle>
             <DialogDescription>
               This will clear your conversation history and song
-              recommendations. Your current queue and API key will be preserved.
+              recommendations. Your current queue will be preserved.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -911,6 +838,84 @@ export default function Home() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Upgrade Dialog */}
+      <Dialog open={showUpgradeDialog} onOpenChange={setShowUpgradeDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Zap className="w-5 h-5 text-yellow-600" />
+              Upgrade Required
+            </DialogTitle>
+            <DialogDescription className="pt-2">
+              {upgradeMessage}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <h4 className="font-medium text-sm">Why upgrade?</h4>
+              <ul className="text-sm text-muted-foreground space-y-1">
+                {tier === "free" && (
+                  <>
+                    <li className="flex items-start gap-2">
+                      <Check className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />
+                      <span>Unlimited GPT-5-mini requests</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <Check className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />
+                      <span>No more monthly limits</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <Check className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />
+                      <span>Priority support</span>
+                    </li>
+                  </>
+                )}
+                {tier === "pro" && (
+                  <>
+                    <li className="flex items-start gap-2">
+                      <Check className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />
+                      <span>Access to GPT-5 model</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <Check className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />
+                      <span>Even better recommendations</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <Check className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />
+                      <span>Premium support</span>
+                    </li>
+                  </>
+                )}
+              </ul>
+            </div>
+          </div>
+          <DialogFooter className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setShowUpgradeDialog(false)}
+            >
+              Maybe Later
+            </Button>
+            <Button
+              onClick={() => {
+                setShowUpgradeDialog(false);
+                setShowPricingModal(true);
+              }}
+              className="gap-2"
+            >
+              <Crown className="w-4 h-4" />
+              View Plans
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Pricing Modal */}
+      <PricingModal
+        open={showPricingModal}
+        onOpenChange={setShowPricingModal}
+      />
     </div>
   );
 }

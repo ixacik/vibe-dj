@@ -1,5 +1,6 @@
 import axios, { type AxiosInstance, type AxiosError } from 'axios';
 import { SupabaseAuth } from './supabase-auth';
+import { useSpotifyStore } from '@/stores/spotify-store';
 import type {
   SpotifyTrack,
   SpotifySearchResponse,
@@ -23,33 +24,63 @@ export class SpotifyService {
 
     // Add auth interceptor
     this.api.interceptors.request.use(async (config) => {
-      const token = await SupabaseAuth.getSpotifyToken();
+      const store = useSpotifyStore.getState();
+
+      // Check if we need to refresh the token
+      if (store.isTokenExpiringSoon() && store.providerRefreshToken) {
+        try {
+          // Import dynamically to avoid circular dependency
+          const { refreshTokenIfNeeded } = await import('./spotify-token-refresh');
+          await refreshTokenIfNeeded();
+        } catch (error) {
+          console.error('Failed to refresh token:', error);
+        }
+      }
+
+      // Get the current token (either existing or just refreshed)
+      let token = store.providerToken;
+
+      // If still no token, try to get from Supabase
+      if (!token) {
+        token = await SupabaseAuth.getSpotifyToken();
+      }
+
       if (!token) {
         throw new Error('No Spotify access token available');
       }
+
       config.headers.Authorization = `Bearer ${token}`;
       return config;
     });
 
-    // Add error interceptor for token refresh
+    // Add error interceptor for better error handling
     this.api.interceptors.response.use(
       (response) => response,
       async (error: AxiosError<SpotifyError>) => {
         if (error.response?.status === 401) {
-          try {
-            // Try to refresh the session
-            await SupabaseAuth.refreshSession();
+          const store = useSpotifyStore.getState();
 
-            // Retry the original request with new token
-            const token = await SupabaseAuth.getSpotifyToken();
-            if (token && error.config) {
-              error.config.headers.Authorization = `Bearer ${token}`;
-              return this.api.request(error.config);
+          // If we have a refresh token, try to refresh and retry
+          if (store.providerRefreshToken && error.config) {
+            try {
+              // Import dynamically to avoid circular dependency
+              const { refreshTokenIfNeeded } = await import('./spotify-token-refresh');
+              const newToken = await refreshTokenIfNeeded();
+              if (newToken) {
+                // Retry the request with the new token
+                error.config.headers.Authorization = `Bearer ${newToken}`;
+                return this.api.request(error.config);
+              }
+            } catch (refreshError) {
+              console.error('Failed to refresh token on 401:', refreshError);
+              // Clear session and throw error
+              await store.logout();
+              throw new Error('Spotify session expired. Please reconnect your Spotify account.');
             }
-          } catch (refreshError) {
-            // Session refresh failed, user needs to re-authenticate
-            throw new Error('Session expired. Please log in again.');
           }
+
+          // No refresh token available, session is truly expired
+          throw new Error('Spotify session expired. Please reconnect your Spotify account.');
         }
         throw error;
       }
