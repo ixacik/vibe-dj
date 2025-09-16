@@ -9,11 +9,15 @@ const STORAGE_KEYS = {
 };
 
 export function AuthProvider({ children }: PropsWithChildren) {
-  const { setSession, fetchUserProfile, setProviderTokens } = useSpotifyStore();
+  const { setSession, fetchUserProfile, setProviderTokens, user, setInitialized } = useSpotifyStore();
 
   useEffect(() => {
+    let mounted = true;
+
     // Get initial session on mount
     supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!mounted) return;
+
       setSession(session);
 
       if (session) {
@@ -46,34 +50,49 @@ export function AuthProvider({ children }: PropsWithChildren) {
           }
         }
 
-        fetchUserProfile();
+        // Only fetch profile if we don't have it yet
+        if (!user) {
+          fetchUserProfile();
+        }
       }
+
+      // Mark as initialized after first session check
+      setInitialized(true);
     });
 
     // Listen for auth state changes
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, session) => {
-      setSession(session);
+      if (!mounted) return;
 
-      if (session && event === 'SIGNED_IN') {
-        // Extract provider tokens on sign in
-        const providerToken = (session as any)?.provider_token;
-        const providerRefreshToken = (session as any)?.provider_refresh_token;
+      // Only update session if it actually changed
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        setSession(session);
 
-        if (providerToken && providerRefreshToken) {
-          // Calculate expiry time (1 hour from now for Spotify)
-          const tokenExpiresAt = Date.now() + (60 * 60 * 1000);
-          setProviderTokens(providerToken, providerRefreshToken, tokenExpiresAt);
+        if (event === 'SIGNED_IN') {
+          // Extract provider tokens on sign in
+          const providerToken = (session as any)?.provider_token;
+          const providerRefreshToken = (session as any)?.provider_refresh_token;
 
-          // Persist to localStorage
-          localStorage.setItem(STORAGE_KEYS.PROVIDER_TOKEN, providerToken);
-          localStorage.setItem(STORAGE_KEYS.PROVIDER_REFRESH_TOKEN, providerRefreshToken);
-          localStorage.setItem(STORAGE_KEYS.TOKEN_EXPIRES_AT, tokenExpiresAt.toString());
+          if (providerToken && providerRefreshToken) {
+            // Calculate expiry time (1 hour from now for Spotify)
+            const tokenExpiresAt = Date.now() + (60 * 60 * 1000);
+            setProviderTokens(providerToken, providerRefreshToken, tokenExpiresAt);
+
+            // Persist to localStorage
+            localStorage.setItem(STORAGE_KEYS.PROVIDER_TOKEN, providerToken);
+            localStorage.setItem(STORAGE_KEYS.PROVIDER_REFRESH_TOKEN, providerRefreshToken);
+            localStorage.setItem(STORAGE_KEYS.TOKEN_EXPIRES_AT, tokenExpiresAt.toString());
+          }
+
+          // Only fetch profile if we don't have it
+          if (!user) {
+            fetchUserProfile();
+          }
         }
-
-        fetchUserProfile();
       } else if (event === 'SIGNED_OUT') {
+        setSession(null);
         // Clear tokens from store and localStorage
         setProviderTokens(null, null, null);
         localStorage.removeItem(STORAGE_KEYS.PROVIDER_TOKEN);
@@ -83,8 +102,11 @@ export function AuthProvider({ children }: PropsWithChildren) {
     });
 
     // Cleanup subscription
-    return () => subscription.unsubscribe();
-  }, [setSession, fetchUserProfile, setProviderTokens]);
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [setSession, fetchUserProfile, setProviderTokens, user, setInitialized]);
 
   return <>{children}</>;
 }

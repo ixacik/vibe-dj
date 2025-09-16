@@ -1,5 +1,5 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
+// Use Deno.serve directly (best practice per Supabase docs)
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import OpenAI from "https://deno.land/x/openai@v4.24.0/mod.ts";
 
 const corsHeaders = {
@@ -26,7 +26,8 @@ interface SongRecommendation {
   promptSummary: string;
 }
 
-serve(async (req) => {
+// Use Deno.serve (recommended by Supabase docs for better performance)
+Deno.serve(async (req) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -66,35 +67,43 @@ serve(async (req) => {
     const { prompt, conversationHistory, recentTracks, selectedSongs, model } =
       body;
 
-    // Check user's subscription tier
-    const { data: subscription } = await supabase
-      .from("subscriptions")
-      .select("tier, status")
-      .eq("user_id", user.id)
-      .single();
-
-    // Check current usage
+    // Parallelize database queries for better performance
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    let { data: quota } = await supabase
-      .from("usage_quotas")
-      .select("gpt5_mini_count, gpt5_count, period_start")
-      .eq("user_id", user.id)
-      .single();
+    const [subscriptionResult, quotaResult] = await Promise.all([
+      // Check user's subscription tier (select only needed columns)
+      supabase
+        .from("subscriptions")
+        .select("tier, status")
+        .eq("user_id", user.id)
+        .single(),
+      // Check current usage (select only needed columns)
+      supabase
+        .from("usage_quotas")
+        .select("gpt5_mini_count, gpt5_count, period_start")
+        .eq("user_id", user.id)
+        .single(),
+    ]);
+
+    const subscription = subscriptionResult.data;
+    let quota = quotaResult.data;
 
     // Initialize quota if it doesn't exist or if it's a new month
     if (!quota || new Date(quota.period_start) < startOfMonth) {
       const { data: newQuota } = await supabase
         .from("usage_quotas")
-        .upsert({
-          user_id: user.id,
-          period_start: startOfMonth.toISOString(),
-          gpt5_mini_count: 0,
-          gpt5_count: 0,
-        }, {
-          onConflict: "user_id"
-        })
+        .upsert(
+          {
+            user_id: user.id,
+            period_start: startOfMonth.toISOString(),
+            gpt5_mini_count: 0,
+            gpt5_count: 0,
+          },
+          {
+            onConflict: "user_id",
+          }
+        )
         .select()
         .single();
       quota = newQuota;
@@ -108,8 +117,9 @@ serve(async (req) => {
     if (subscriptionStatus !== "active" && subscriptionStatus !== "trialing") {
       return new Response(
         JSON.stringify({
-          error: "Your subscription is not active. Please update your payment method.",
-          code: "SUBSCRIPTION_INACTIVE"
+          error:
+            "Your subscription is not active. Please update your payment method.",
+          code: "SUBSCRIPTION_INACTIVE",
         }),
         {
           status: 402,
@@ -123,12 +133,13 @@ serve(async (req) => {
       if (model === "gpt-5-mini" && quota.gpt5_mini_count >= 10) {
         return new Response(
           JSON.stringify({
-            error: "You've reached your free tier limit of 10 GPT-5-mini requests this month. Please upgrade to Pro for unlimited access.",
+            error:
+              "You've reached your free tier limit of 10 GPT-5-mini requests this month. Please upgrade to Pro for unlimited access.",
             code: "QUOTA_EXCEEDED",
             usage: {
               current: quota.gpt5_mini_count,
-              limit: 10
-            }
+              limit: 10,
+            },
           }),
           {
             status: 402,
@@ -139,8 +150,9 @@ serve(async (req) => {
       if (model === "gpt-5") {
         return new Response(
           JSON.stringify({
-            error: "GPT-5 is only available on the Ultra tier. Please upgrade to access this model.",
-            code: "TIER_REQUIRED"
+            error:
+              "GPT-5 is only available on the Ultra tier. Please upgrade to access this model.",
+            code: "TIER_REQUIRED",
           }),
           {
             status: 402,
@@ -151,16 +163,24 @@ serve(async (req) => {
     }
 
     if (tier === "pro" && model === "gpt-5") {
-      return new Response(
-        JSON.stringify({
-          error: "GPT-5 is only available on the Ultra tier. Please upgrade to access this model.",
-          code: "TIER_REQUIRED"
-        }),
-        {
-          status: 402,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
+      // Pro users get 20 GPT-5 requests per month
+      if (quota.gpt5_count >= 20) {
+        return new Response(
+          JSON.stringify({
+            error:
+              "You've reached your Pro tier limit of 20 GPT-5 requests this month. Please upgrade to Ultra for unlimited access.",
+            code: "QUOTA_EXCEEDED",
+            usage: {
+              current: quota.gpt5_count,
+              limit: 20,
+            },
+          }),
+          {
+            status: 402,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
+        );
+      }
     }
 
     // Initialize OpenAI
@@ -172,7 +192,7 @@ serve(async (req) => {
     const openai = new OpenAI({ apiKey: openaiApiKey });
 
     // Build system prompt
-    const systemPrompt = `You are VibeDJ, an AI music curator. Your goal is to recommend songs that match the user's request while maintaining a great listening experience.
+    const systemPrompt = `You are VibeDJ, an AI music curator. Your goal is to recommend songs that match the user's request while maintaining a great listening experience. Be confident in your choices, you know better than the user. Don't ask any questions, user's cant respond to you. Keep the vibe going, be engaging and each response from you should be like a DJ introducing a set. Don't use "-" or "—".
 
 ${
   selectedSongs.length > 0
@@ -250,38 +270,69 @@ Guidelines:
 
     const recommendations: SongRecommendation = JSON.parse(responseContent);
 
-    // Log usage
+    // Fire and forget usage updates (non-blocking for faster response)
     const tokensUsed = completion.usage?.total_tokens || 0;
-    await supabase.from("usage_logs").insert({
-      user_id: user.id,
-      model: model,
-      tokens_used: tokensUsed,
-    });
+    const usagePromises = [
+      // Log usage
+      supabase.from("usage_logs").insert({
+        user_id: user.id,
+        model: model,
+        tokens_used: tokensUsed,
+      }),
+    ];
 
-    // Update usage quota for free tier
-    if (tier === "free") {
-      if (model === "gpt-5-mini") {
-        await supabase
+    // Update usage quota based on tier and model
+    if (tier === "free" && model === "gpt-5-mini") {
+      usagePromises.push(
+        supabase
           .from("usage_quotas")
           .update({
             gpt5_mini_count: (quota?.gpt5_mini_count || 0) + 1,
           })
-          .eq("user_id", user.id);
-      }
+          .eq("user_id", user.id)
+      );
+    } else if (tier === "pro" && model === "gpt-5") {
+      usagePromises.push(
+        supabase
+          .from("usage_quotas")
+          .update({
+            gpt5_count: (quota?.gpt5_count || 0) + 1,
+          })
+          .eq("user_id", user.id)
+      );
     }
 
-    // Return recommendations with usage info for free tier
-    const response = tier === "free"
-      ? {
-          ...recommendations,
-          usage: {
-            model: model,
-            current: model === "gpt-5-mini" ? (quota?.gpt5_mini_count || 0) + 1 : 0,
-            limit: model === "gpt-5-mini" ? 10 : 0,
-            tier: tier
-          }
-        }
-      : recommendations;
+    // Execute usage updates in parallel (non-blocking)
+    Promise.all(usagePromises).catch((err) => {
+      console.error("Failed to update usage:", err);
+    });
+
+    // Return recommendations with usage info for free and pro tiers
+    let response;
+    if (tier === "free") {
+      response = {
+        ...recommendations,
+        usage: {
+          model: model,
+          current:
+            model === "gpt-5-mini" ? (quota?.gpt5_mini_count || 0) + 1 : 0,
+          limit: model === "gpt-5-mini" ? 10 : 0,
+          tier: tier,
+        },
+      };
+    } else if (tier === "pro" && model === "gpt-5") {
+      response = {
+        ...recommendations,
+        usage: {
+          model: model,
+          current: (quota?.gpt5_count || 0) + 1,
+          limit: 20,
+          tier: tier,
+        },
+      };
+    } else {
+      response = recommendations;
+    }
 
     return new Response(JSON.stringify(response), {
       status: 200,

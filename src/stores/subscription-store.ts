@@ -22,15 +22,30 @@ interface Subscription {
   current_period_end?: string;
 }
 
+interface PriceInfo {
+  id: string;
+  amount: number | null;
+  currency: string;
+  recurring?: {
+    interval: string;
+    interval_count: number;
+  } | null;
+}
+
 interface SubscriptionState {
   subscription: Subscription | null;
   usage: Usage | null;
+  prices: {
+    pro: PriceInfo | null;
+    ultra: PriceInfo | null;
+  } | null;
   isLoading: boolean;
   error: string | null;
 
   // Actions
   fetchSubscription: () => Promise<void>;
   fetchUsage: () => Promise<void>;
+  fetchPrices: () => Promise<void>;
   createCheckoutSession: (priceId: string) => Promise<string | null>;
   createPortalSession: () => Promise<string | null>;
   clearCache: () => void;
@@ -45,6 +60,7 @@ export const useIsSubscriptionLoading = () => useSubscriptionStore((state) => st
 export const useSubscriptionStore = create<SubscriptionState>((set) => ({
   subscription: null,
   usage: null,
+  prices: null,
   isLoading: false,
   error: null,
 
@@ -198,7 +214,37 @@ export const useSubscriptionStore = create<SubscriptionState>((set) => ({
     }
   },
 
+  fetchPrices: async () => {
+    try {
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/get-prices`,
+        {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch prices");
+      }
+
+      const prices = await response.json();
+      set({ prices });
+    } catch (error) {
+      console.error("Error fetching prices:", error);
+      // Set fallback prices if fetch fails - $9.99 and $19.99
+      set({
+        prices: {
+          pro: { id: "pro", amount: 999, currency: "usd" }, // $9.99
+          ultra: { id: "ultra", amount: 1999, currency: "usd" }, // $19.99
+        },
+      });
+    }
+  },
+
   clearCache: () => {
-    set({ subscription: null, usage: null, error: null });
+    set({ subscription: null, usage: null, prices: null, error: null });
   },
 }));

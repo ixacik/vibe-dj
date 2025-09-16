@@ -18,6 +18,8 @@ interface SpotifyStore {
   isLoading: boolean;
   error: string | null;
   queueResults: QueueResult[];
+  hasInitializedProfile: boolean;
+  isInitialized: boolean;
 
   // Token management
   providerToken: string | null;
@@ -30,6 +32,7 @@ interface SpotifyStore {
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
   setProviderTokens: (token: string | null, refreshToken: string | null, expiresAt: number | null) => void;
+  setInitialized: (initialized: boolean) => void;
 
   // Token helpers
   isTokenExpired: () => boolean;
@@ -66,6 +69,8 @@ export const useSpotifyStore = create<SpotifyStore>((set, get) => ({
   isLoading: false,
   error: null,
   queueResults: [],
+  hasInitializedProfile: false,
+  isInitialized: false,
 
   // Token management state - initialize from localStorage
   providerToken: null,
@@ -86,6 +91,7 @@ export const useSpotifyStore = create<SpotifyStore>((set, get) => ({
     providerRefreshToken: refreshToken,
     tokenExpiresAt: expiresAt
   }),
+  setInitialized: (initialized) => set({ isInitialized: initialized }),
 
   // Token helpers
   isTokenExpired: () => {
@@ -132,6 +138,7 @@ export const useSpotifyStore = create<SpotifyStore>((set, get) => ({
         user: null,
         error: null,
         queueResults: [],
+        hasInitializedProfile: false,
         // Clear token data
         providerToken: null,
         providerRefreshToken: null,
@@ -148,13 +155,28 @@ export const useSpotifyStore = create<SpotifyStore>((set, get) => ({
 
   // Fetch user profile
   fetchUserProfile: async () => {
-    if (!get().isAuthenticated) return;
+    const state = get();
+    if (!state.isAuthenticated) return;
 
-    set({ isLoading: true, error: null });
+    // Don't fetch if we already have the user and it's not expired
+    if (state.user && state.hasInitializedProfile && !state.isTokenExpired()) {
+      return;
+    }
+
+    // Only show loading if we don't have cached user data
+    if (!state.user) {
+      set({ isLoading: true, error: null });
+    }
+
     try {
       const spotify = SpotifyService.getInstance();
       const user = await spotify.getCurrentUser();
-      set({ user, isLoading: false });
+      set({
+        user,
+        isLoading: false,
+        hasInitializedProfile: true,
+        error: null
+      });
     } catch (error) {
       set({
         error: error instanceof Error ? error.message : 'Failed to fetch user profile',

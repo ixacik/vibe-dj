@@ -5,14 +5,13 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Music, LogOut, User, Loader2, Crown, Zap } from 'lucide-react';
+import { LogOut, User, Loader2, CreditCard } from 'lucide-react';
 import { SpotifyLogo } from '@/components/spotify-logo';
 import { useSpotifyStore } from '@/stores/spotify-store';
-import { useSubscriptionTier } from '@/stores/subscription-store';
+import { useSubscriptionTier, useSubscriptionStore } from '@/stores/subscription-store';
 import { useEffect } from 'react';
 
 export function SpotifyAuthButton() {
@@ -21,19 +20,24 @@ export function SpotifyAuthButton() {
     user,
     isLoading,
     error,
+    hasInitializedProfile,
+    isInitialized,
     login,
     logout,
     fetchUserProfile,
   } = useSpotifyStore();
   const tier = useSubscriptionTier();
+  const { createPortalSession } = useSubscriptionStore();
 
   useEffect(() => {
-    if (isAuthenticated && !user && !error) {
+    // Only fetch if authenticated, no user, no error, and haven't tried yet
+    if (isAuthenticated && !user && !error && !hasInitializedProfile) {
       fetchUserProfile();
     }
-  }, [isAuthenticated, user, error, fetchUserProfile]);
+  }, [isAuthenticated, user, error, hasInitializedProfile, fetchUserProfile]);
 
-  if (isLoading) {
+  // Don't show loading if we're just checking cached session
+  if (isLoading && !isInitialized) {
     return (
       <Button variant="outline" disabled>
         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -62,12 +66,28 @@ export function SpotifyAuthButton() {
       );
     }
 
-    return (
-      <Button variant="outline" disabled>
-        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-        Loading profile...
-      </Button>
-    );
+    // Only show loading profile if we're actually fetching
+    if (isLoading) {
+      return (
+        <Button variant="outline" disabled>
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          Loading profile...
+        </Button>
+      );
+    }
+
+    // If initialized but no user, there might be an issue
+    if (isInitialized && hasInitializedProfile) {
+      return (
+        <Button onClick={login} variant="outline" className="h-9">
+          <SpotifyLogo className="h-4 w-4" />
+          Reconnect Spotify
+        </Button>
+      );
+    }
+
+    // During initialization, return null to prevent flash
+    return null;
   }
 
   return (
@@ -91,33 +111,40 @@ export function SpotifyAuthButton() {
           )}
           {tier === "pro" && (
             <Badge className="ml-1 bg-blue-600 text-white">
-              <Crown className="w-3 h-3 mr-1" />
               Pro
             </Badge>
           )}
           {tier === "ultra" && (
             <Badge className="ml-1 bg-purple-600 text-white">
-              <Zap className="w-3 h-3 mr-1" />
               Ultra
             </Badge>
           )}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
-        <DropdownMenuLabel>Spotify Account</DropdownMenuLabel>
-        <DropdownMenuSeparator />
         <DropdownMenuItem disabled>
           <User className="mr-2 h-4 w-4" />
-          {user.email}
-        </DropdownMenuItem>
-        <DropdownMenuItem disabled>
-          <Music className="mr-2 h-4 w-4" />
-          {user.product === 'premium' ? 'Premium Account' : 'Free Account'}
+          <span className="flex flex-col">
+            <span>{user.email}</span>
+            <span className="text-xs text-muted-foreground capitalize">{tier} Tier</span>
+          </span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={logout} className="text-destructive">
+        {tier !== "free" && (
+          <DropdownMenuItem
+            onClick={() => {
+              createPortalSession().then((url) => {
+                if (url) window.location.href = url;
+              });
+            }}
+          >
+            <CreditCard className="mr-2 h-4 w-4" />
+            Manage Subscription
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem onClick={logout} className="text-red-500 focus:text-red-500">
           <LogOut className="mr-2 h-4 w-4" />
-          Disconnect
+          Sign Out
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

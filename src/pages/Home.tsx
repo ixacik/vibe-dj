@@ -35,7 +35,6 @@ import {
   CheckCircle2,
   Crown,
   Zap,
-  CreditCard,
   Check,
 } from "lucide-react";
 import { AudioWaveform } from "@/components/audio-waveform";
@@ -47,17 +46,22 @@ import { PricingModal } from "@/components/pricing-modal";
 import { useSelectedSongIds } from "@/stores/selected-songs-store";
 import { useLikedSongs } from "@/hooks/useLikedSongs";
 import { useModelStore } from "@/stores/model-store";
-import { useSubscriptionStore, useSubscriptionTier } from "@/stores/subscription-store";
+import {
+  useSubscriptionStore,
+  useSubscriptionTier,
+  useSubscriptionUsage,
+} from "@/stores/subscription-store";
 import { useState, useEffect, Fragment, useCallback, useMemo } from "react";
 import {
   OpenAIService,
   type SongRecommendation,
   QuotaExceededError,
-  TierRequiredError
+  TierRequiredError,
 } from "@/lib/openai-service";
 import { useSpotifyStore } from "@/stores/spotify-store";
 import { useAutoModeStore } from "@/stores/auto-mode-store";
 import { useConversationStore } from "@/stores/conversation-store";
+import { usePromptContextStore } from "@/stores/prompt-context-store";
 import { usePlayedTracks } from "@/hooks/usePlayedTracks";
 import {
   useSpotifyQueue,
@@ -83,6 +87,8 @@ export default function Home() {
 
   const { isAuthenticated: isSpotifyAuthenticated, user: spotifyUser } =
     useSpotifyStore();
+  const activePrompt = usePromptContextStore(state => state.getActivePrompt());
+  const clearPromptContexts = usePromptContextStore(state => state.clearAll);
   const {
     isAutoMode,
     toggleAutoMode,
@@ -96,7 +102,8 @@ export default function Home() {
 
   // Subscription store hooks
   const tier = useSubscriptionTier();
-  const { fetchSubscription, fetchUsage, createPortalSession } = useSubscriptionStore();
+  const usage = useSubscriptionUsage();
+  const { fetchSubscription, fetchUsage } = useSubscriptionStore();
 
   // Derive selected songs from IDs and all songs
   const selectedSongs = useMemo(() => {
@@ -162,7 +169,7 @@ export default function Home() {
         selectedModel
       );
 
-      // Set the DJ message and recommendations
+      // Set the DJ message and recommendations immediately
       setDjMessage(recommendations.djMessage);
       setLastRecommendations(recommendations);
       setIsLoading(false);
@@ -185,31 +192,34 @@ export default function Home() {
         })),
       });
 
-      // Add to Spotify queue
+      // Add to Spotify queue (fire and forget - non-blocking)
       if (isSpotifyAuthenticated && spotifyUser?.product === "premium") {
         const tracks = recommendations.recommendations.map((song) => ({
           artist: song.artist,
           title: song.title,
         }));
 
-        const results = await addToQueueMutation.mutateAsync({
+        // Use mutate instead of mutateAsync to avoid blocking
+        addToQueueMutation.mutate({
           tracks,
           promptSummary: `Auto: ${recommendations.promptSummary}`,
+        }, {
+          onSuccess: (results) => {
+            // Track successfully queued songs
+            const successfulTracks = results
+              .filter((r) => r.success && r.track)
+              .map((r) => ({
+                artist: r.track!.artists[0].name,
+                title: r.track!.name,
+                trackId: r.track!.id,
+                source: "queued" as const,
+              }));
+
+            if (successfulTracks.length > 0) {
+              addTracks(successfulTracks);
+            }
+          }
         });
-
-        // Track successfully queued songs
-        const successfulTracks = results
-          .filter((r) => r.success && r.track)
-          .map((r) => ({
-            artist: r.track!.artists[0].name,
-            title: r.track!.name,
-            trackId: r.track!.id,
-            source: "queued" as const,
-          }));
-
-        if (successfulTracks.length > 0) {
-          addTracks(successfulTracks);
-        }
       }
     } catch (error) {
       console.error("Error in auto-continue:", error);
@@ -270,6 +280,9 @@ export default function Home() {
     // Clear played tracks history
     clearTracks();
 
+    // Clear prompt contexts
+    clearPromptContexts();
+
     // Reset DJ message to default welcome message
     setDjMessage(
       "Welcome! Request your favorite tracks and I'll add them to the queue!"
@@ -311,26 +324,27 @@ export default function Home() {
         const conversationHistory = getFormattedHistory();
         const recentTracks = getRecentTracks();
 
-        // Get AI recommendations - only pass selected songs
-        const recommendations = await OpenAIService.getSongRecommendations(
-          userMessage,
-          conversationHistory,
-          recentTracks,
-          selectedSongs.map((song) => ({
-            artist: song.artist,
-            title: song.name,
-          })),
-          selectedModel
-        );
+        // Start all async operations in parallel
+        const [recommendations] = await Promise.all([
+          // Get AI recommendations - only pass selected songs
+          OpenAIService.getSongRecommendations(
+            userMessage,
+            conversationHistory,
+            recentTracks,
+            selectedSongs.map((song) => ({
+              artist: song.artist,
+              title: song.name,
+            })),
+            selectedModel
+          ),
+          // Fetch usage in parallel (non-blocking)
+          fetchUsage().catch(err => console.error('Failed to fetch usage:', err))
+        ]);
 
         // Set the DJ message and recommendations
         setDjMessage(recommendations.djMessage);
         setLastRecommendations(recommendations);
         setIsLoading(false);
-
-        // Sync usage with backend after successful request
-        // The edge function has already updated the database, so we fetch the latest
-        await fetchUsage();
 
         // Track recommended songs
         const tracksToAdd = recommendations.recommendations.map((song) => ({
@@ -351,54 +365,57 @@ export default function Home() {
         });
 
         // Automatically add to Spotify if connected and user is Premium
+        // Fire and forget - don't block UI updates
         if (isSpotifyAuthenticated && spotifyUser?.product === "premium") {
-          try {
-            const tracks = recommendations.recommendations.map((song) => ({
-              artist: song.artist,
-              title: song.title,
-            }));
+          const tracks = recommendations.recommendations.map((song) => ({
+            artist: song.artist,
+            title: song.title,
+          }));
 
-            const results = await addToQueueMutation.mutateAsync({
-              tracks,
-              promptSummary: recommendations.promptSummary,
-            });
+          // Add to queue without blocking
+          addToQueueMutation.mutate({
+            tracks,
+            promptSummary: recommendations.promptSummary,
+          }, {
+            onSuccess: (results) => {
+              // Track successfully queued songs
+              const successfulTracks = results
+                .filter((r) => r.success && r.track)
+                .map((r) => ({
+                  artist: r.track!.artists[0].name,
+                  title: r.track!.name,
+                  trackId: r.track!.id,
+                  source: "queued" as const,
+                }));
 
-            // Track successfully queued songs
-            const successfulTracks = results
-              .filter((r) => r.success && r.track)
-              .map((r) => ({
-                artist: r.track!.artists[0].name,
-                title: r.track!.name,
-                trackId: r.track!.id,
-                source: "queued" as const,
-              }));
-
-            if (successfulTracks.length > 0) {
-              addTracks(successfulTracks);
-            }
-
-            const successCount = results.filter((r) => r.success).length;
-            const totalCount = results.length;
-
-            if (successCount === totalCount) {
-              toast.success(
-                `Added ${successCount} songs to your Spotify queue!`
-              );
-              if (!playbackState || !playbackState.is_playing) {
-                toast.info("Playback started automatically");
+              if (successfulTracks.length > 0) {
+                addTracks(successfulTracks);
               }
-            } else if (successCount > 0) {
-              toast.warning(
-                `Added ${successCount}/${totalCount} songs to queue. Some tracks couldn't be found.`
-              );
-            } else {
-              toast.error("Failed to add songs to Spotify queue");
+
+              const successCount = results.filter((r) => r.success).length;
+              const totalCount = results.length;
+
+              if (successCount === totalCount) {
+                toast.success(
+                  `Added ${successCount} songs to your Spotify queue!`
+                );
+                if (!playbackState || !playbackState.is_playing) {
+                  toast.info("Playback started automatically");
+                }
+              } else if (successCount > 0) {
+                toast.warning(
+                  `Added ${successCount}/${totalCount} songs to queue. Some tracks couldn't be found.`
+                );
+              } else {
+                toast.error("Failed to add songs to Spotify queue");
+              }
+            },
+            onError: (error) => {
+              if (error instanceof Error) {
+                toast.error(error.message);
+              }
             }
-          } catch (error) {
-            if (error instanceof Error) {
-              toast.error(error.message);
-            }
-          }
+          });
         }
       } catch (error) {
         console.error("Error getting recommendations:", error);
@@ -406,11 +423,15 @@ export default function Home() {
         if (error instanceof QuotaExceededError) {
           setUpgradeMessage(error.message);
           setShowUpgradeDialog(true);
-          setDjMessage("You've reached your free tier limit. Please upgrade to continue!");
+          setDjMessage(
+            "You've reached your free tier limit. Please upgrade to continue!"
+          );
         } else if (error instanceof TierRequiredError) {
           setUpgradeMessage(error.message);
           setShowUpgradeDialog(true);
-          setDjMessage("This feature requires an upgrade. Check out our plans!");
+          setDjMessage(
+            "This feature requires an upgrade. Check out our plans!"
+          );
         } else {
           setDjMessage(
             "Sorry, I couldn't process that request. Please try again."
@@ -436,7 +457,7 @@ export default function Home() {
         <div className="flex justify-between items-center flex-shrink-0">
           <div className="flex items-center gap-3">
             <VinylDisc size={32} className="text-foreground" />
-            <h1 className="text-2xl font-bold">VibeDJ</h1>
+            <h1 className="-ml-1.5 text-2xl font-bold">VibeDJ</h1>
             <UsageLimitBadge />
           </div>
           <div className="flex items-center gap-2">
@@ -447,19 +468,6 @@ export default function Home() {
               >
                 <Zap className="h-4 w-4 fill-current" />
                 Upgrade to Pro
-              </Button>
-            )}
-            {tier !== "free" && (
-              <Button
-                variant="outline"
-                onClick={() => {
-                  createPortalSession().then(url => {
-                    if (url) window.location.href = url;
-                  });
-                }}
-              >
-                <CreditCard className="h-4 w-4 mr-2" />
-                Manage Subscription
               </Button>
             )}
             <SpotifyAuthButton />
@@ -535,33 +543,44 @@ export default function Home() {
                   {/* Currently Playing */}
                   {spotifyQueue?.currently_playing && (
                     <div className="w-full overflow-hidden">
+                      {activePrompt && (
+                        <div className="py-2">
+                          <div className="flex items-center gap-2 px-3">
+                            <div className="h-px flex-1 bg-foreground/20" />
+                            <span className="text-xs text-foreground/60 font-medium">
+                              {activePrompt.summary}
+                            </span>
+                            <div className="h-px flex-1 bg-foreground/20" />
+                          </div>
+                        </div>
+                      )}
                       <div className="p-3 rounded-lg bg-primary/10 border border-primary/20">
                         <div className="flex items-center gap-3 min-w-0">
-                        <div className="relative">
-                          <img
-                            src={
-                              spotifyQueue.currently_playing.album.images[0]
-                                ?.url
-                            }
-                            alt={spotifyQueue.currently_playing.album.name}
-                            className="w-12 h-12 rounded"
-                          />
-                          <Badge className="absolute -top-2 -right-2 bg-primary text-[10px] px-1 py-0">
-                            NOW
-                          </Badge>
-                        </div>
-                        <div className="flex-1 min-w-0 overflow-hidden">
-                          <p className="font-medium text-sm truncate overflow-hidden text-ellipsis whitespace-nowrap">
-                            {spotifyQueue.currently_playing.name}
-                          </p>
-                          <p className="text-xs text-muted-foreground truncate overflow-hidden text-ellipsis whitespace-nowrap">
-                            {spotifyQueue.currently_playing.artists
-                              .map((a) => a.name)
-                              .join(", ")}
-                          </p>
-                        </div>
-                        <HeartButton track={spotifyQueue.currently_playing} />
-                        <AudioWaveform className="h-4 w-4 text-muted-foreground" />
+                          <div className="relative">
+                            <img
+                              src={
+                                spotifyQueue.currently_playing.album.images[0]
+                                  ?.url
+                              }
+                              alt={spotifyQueue.currently_playing.album.name}
+                              className="w-12 h-12 rounded"
+                            />
+                            <Badge className="absolute -top-2 -right-2 bg-primary text-[10px] px-1 py-0">
+                              NOW
+                            </Badge>
+                          </div>
+                          <div className="flex-1 min-w-0 overflow-hidden">
+                            <p className="font-medium text-sm truncate overflow-hidden text-ellipsis whitespace-nowrap">
+                              {spotifyQueue.currently_playing.name}
+                            </p>
+                            <p className="text-xs text-muted-foreground truncate overflow-hidden text-ellipsis whitespace-nowrap">
+                              {spotifyQueue.currently_playing.artists
+                                .map((a) => a.name)
+                                .join(", ")}
+                            </p>
+                          </div>
+                          <HeartButton track={spotifyQueue.currently_playing} />
+                          <AudioWaveform className="h-4 w-4 text-muted-foreground" />
                         </div>
                       </div>
                     </div>
@@ -612,57 +631,59 @@ export default function Home() {
                                   : "bg-muted/50 hover:bg-muted/70 cursor-pointer"
                               }`}
                               onClick={() => {
-                              if (
-                                !isOptimistic &&
-                                spotifyUser?.product === "premium"
-                              ) {
-                                skipToTrackMutation.mutate(track.id, {
-                                  onError: () => {
-                                    toast.error("Failed to skip to track");
-                                  },
-                                });
-                              } else if (!isOptimistic) {
-                                toast.error(
-                                  "Spotify Premium required to skip tracks"
-                                );
-                              }
-                            }}
-                          >
-                            <div className="flex items-center gap-3 flex-1 min-w-0">
-                              <div className="relative">
-                                <img
-                                  src={
-                                    track.album.images[0]?.url ||
-                                    "/vinyl-disc.svg"
-                                  }
-                                  alt={track.album.name}
-                                  className="w-10 h-10 rounded"
-                                />
-                                {isOptimistic && (
-                                  <div className="absolute inset-0 flex items-center justify-center">
-                                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
-                                  </div>
+                                if (
+                                  !isOptimistic &&
+                                  spotifyUser?.product === "premium"
+                                ) {
+                                  skipToTrackMutation.mutate(track.id, {
+                                    onError: () => {
+                                      toast.error("Failed to skip to track");
+                                    },
+                                  });
+                                } else if (!isOptimistic) {
+                                  toast.error(
+                                    "Spotify Premium required to skip tracks"
+                                  );
+                                }
+                              }}
+                            >
+                              <div className="flex items-center gap-3 flex-1 min-w-0">
+                                <div className="relative">
+                                  <img
+                                    src={
+                                      track.album.images[0]?.url ||
+                                      "/vinyl-disc.svg"
+                                    }
+                                    alt={track.album.name}
+                                    className="w-10 h-10 rounded"
+                                  />
+                                  {isOptimistic && (
+                                    <div className="absolute inset-0 flex items-center justify-center">
+                                      <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-0 overflow-hidden">
+                                  <p className="font-medium text-sm truncate overflow-hidden text-ellipsis whitespace-nowrap">
+                                    {track.name}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground truncate overflow-hidden text-ellipsis whitespace-nowrap">
+                                    {track.artists
+                                      .map((a) => a.name)
+                                      .join(", ")}
+                                  </p>
+                                </div>
+                                {isOptimistic ? (
+                                  <Badge variant="outline" className="text-xs">
+                                    Adding...
+                                  </Badge>
+                                ) : (
+                                  <>
+                                    <HeartButton track={track} />
+                                    <Play className="h-3.5 w-3.5 text-muted-foreground fill-muted-foreground" />
+                                  </>
                                 )}
                               </div>
-                              <div className="flex-1 min-w-0 overflow-hidden">
-                                <p className="font-medium text-sm truncate overflow-hidden text-ellipsis whitespace-nowrap">
-                                  {track.name}
-                                </p>
-                                <p className="text-xs text-muted-foreground truncate overflow-hidden text-ellipsis whitespace-nowrap">
-                                  {track.artists.map((a) => a.name).join(", ")}
-                                </p>
-                              </div>
-                              {isOptimistic ? (
-                                <Badge variant="outline" className="text-xs">
-                                  Adding...
-                                </Badge>
-                              ) : (
-                                <>
-                                  <HeartButton track={track} />
-                                  <Play className="h-3.5 w-3.5 text-muted-foreground fill-muted-foreground" />
-                                </>
-                              )}
-                            </div>
                             </div>
                           </div>
                         </Fragment>
@@ -779,20 +800,27 @@ export default function Home() {
                     </Button>
                   </div>
                   {/* Model selector */}
-                  <Select
-                    value={selectedModel}
-                    onValueChange={(value) =>
-                      setSelectedModel(value as "gpt-5" | "gpt-5-mini")
-                    }
-                  >
-                    <SelectTrigger className="w-[130px] h-9 shrink-0">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent align="end">
-                      <SelectItem value="gpt-5">GPT-5</SelectItem>
-                      <SelectItem value="gpt-5-mini">GPT-5 Mini</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <div className="flex items-center gap-2">
+                    <Select
+                      value={selectedModel}
+                      onValueChange={(value) =>
+                        setSelectedModel(value as "gpt-5" | "gpt-5-mini")
+                      }
+                    >
+                      <SelectTrigger className="w-[130px] h-9 shrink-0">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent align="end">
+                        <SelectItem value="gpt-5">GPT-5</SelectItem>
+                        <SelectItem value="gpt-5-mini">GPT-5 Mini</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {tier === "pro" && selectedModel === "gpt-5" && usage && (
+                      <span className="text-xs text-muted-foreground">
+                        {usage.gpt5_count}/20
+                      </span>
+                    )}
+                  </div>
                 </div>
               </CardContent>
               {/* Overlay message when Spotify is not playing */}
@@ -878,7 +906,7 @@ export default function Home() {
                   <>
                     <li className="flex items-start gap-2">
                       <Check className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />
-                      <span>Access to GPT-5 model</span>
+                      <span>20 GPT-5 requests/month</span>
                     </li>
                     <li className="flex items-start gap-2">
                       <Check className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />

@@ -1,6 +1,5 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.4";
-import Stripe from "https://esm.sh/stripe@13.10.0?target=deno";
+import Stripe from "https://esm.sh/stripe@14?target=denonext";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -8,7 +7,20 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, stripe-signature",
 };
 
-serve(async (req) => {
+// Initialize Stripe with proper config for Deno
+const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
+if (!stripeSecretKey) {
+  throw new Error("Missing STRIPE_SECRET_KEY");
+}
+
+const stripe = new Stripe(stripeSecretKey, {
+  apiVersion: "2024-11-20",
+});
+
+// Create crypto provider for async webhook verification
+const cryptoProvider = Stripe.createSubtleCryptoProvider();
+
+Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
@@ -22,19 +34,13 @@ serve(async (req) => {
       );
     }
 
-    const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
     const stripeWebhookSecret = Deno.env.get("STRIPE_WEBHOOK_SECRET");
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
-    if (!stripeSecretKey || !stripeWebhookSecret) {
-      throw new Error("Missing Stripe configuration");
+    if (!stripeWebhookSecret) {
+      throw new Error("Missing STRIPE_WEBHOOK_SECRET");
     }
-
-    const stripe = new Stripe(stripeSecretKey, {
-      apiVersion: "2023-10-16",
-      httpClient: Stripe.createFetchHttpClient(),
-    });
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
@@ -42,10 +48,12 @@ serve(async (req) => {
     let event: Stripe.Event;
 
     try {
-      event = stripe.webhooks.constructEvent(
+      event = await stripe.webhooks.constructEventAsync(
         body,
         signature,
-        stripeWebhookSecret
+        stripeWebhookSecret,
+        undefined,
+        cryptoProvider
       );
     } catch (err) {
       console.error("Webhook signature verification failed:", err);
