@@ -22,7 +22,8 @@ export const useAutoModeStore = create<AutoModeStore>()(
       // Toggle auto mode on/off
       toggleAutoMode: () => set((state) => ({
         isAutoMode: !state.isAutoMode,
-        lastAutoPromptSummary: null // Reset when toggling
+        // Keep lastAutoPromptSummary to maintain state across toggles
+        // This prevents re-triggering on the same track when re-enabling
       })),
 
       // Set the last auto prompt to prevent duplicates

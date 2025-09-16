@@ -89,8 +89,10 @@ export default function Home() {
 
   const { isAuthenticated: isSpotifyAuthenticated, user: spotifyUser } =
     useSpotifyStore();
-  const activePrompt = usePromptContextStore(state => state.getActivePrompt());
-  const clearPromptContexts = usePromptContextStore(state => state.clearAll);
+  const activePrompt = usePromptContextStore((state) =>
+    state.getActivePrompt()
+  );
+  const clearPromptContexts = usePromptContextStore((state) => state.clearAll);
   const {
     isAutoMode,
     toggleAutoMode,
@@ -119,7 +121,13 @@ export default function Home() {
   const addToQueueMutation = useAddToQueue();
 
   // Playback controls
-  const { playPause, skipToNext, skipToPrevious, seek, isLoading: isControlLoading } = usePlaybackControls();
+  const {
+    playPause,
+    skipToNext,
+    skipToPrevious,
+    seek,
+    isLoading: isControlLoading,
+  } = usePlaybackControls();
 
   // Conversation and play history hooks
   const { messages, addMessage, clearHistory, getFormattedHistory } =
@@ -205,26 +213,29 @@ export default function Home() {
         }));
 
         // Use mutate instead of mutateAsync to avoid blocking
-        addToQueueMutation.mutate({
-          tracks,
-          promptSummary: `Auto: ${recommendations.promptSummary}`,
-        }, {
-          onSuccess: (results) => {
-            // Track successfully queued songs
-            const successfulTracks = results
-              .filter((r) => r.success && r.track)
-              .map((r) => ({
-                artist: r.track!.artists[0].name,
-                title: r.track!.name,
-                trackId: r.track!.id,
-                source: "queued" as const,
-              }));
+        addToQueueMutation.mutate(
+          {
+            tracks,
+            promptSummary: `Auto: ${recommendations.promptSummary}`,
+          },
+          {
+            onSuccess: (results) => {
+              // Track successfully queued songs
+              const successfulTracks = results
+                .filter((r) => r.success && r.track)
+                .map((r) => ({
+                  artist: r.track!.artists[0].name,
+                  title: r.track!.name,
+                  trackId: r.track!.id,
+                  source: "queued" as const,
+                }));
 
-            if (successfulTracks.length > 0) {
-              addTracks(successfulTracks);
-            }
+              if (successfulTracks.length > 0) {
+                addTracks(successfulTracks);
+              }
+            },
           }
-        });
+        );
       }
     } catch (error) {
       console.error("Error in auto-continue:", error);
@@ -247,35 +258,42 @@ export default function Home() {
 
     const currentTrack =
       spotifyQueue?.currently_playing as EnhancedSpotifyTrack | null;
-    if (!currentTrack?.promptGroupId || !currentTrack?.promptSummary) return;
+
+    // Need a valid track to continue
+    if (!currentTrack?.id) return;
 
     // Don't trigger for auto-generated prompts to prevent infinite loops
-    if (currentTrack.promptSummary.startsWith("Auto:")) return;
+    if (currentTrack.promptSummary?.startsWith("Auto:")) return;
 
-    // Check if this is the last track of its prompt group
-    const remainingFromGroup = (spotifyQueue?.queue || []).filter(
-      (t) =>
-        (t as EnhancedSpotifyTrack).promptGroupId === currentTrack.promptGroupId
-    );
+    // Check if we're on the last track in the entire queue
+    const totalQueueLength = (spotifyQueue?.queue || []).length;
 
-    // If no more tracks from this group and we haven't already triggered for this group
-    if (
-      remainingFromGroup.length === 0 &&
-      lastAutoPromptSummary !== currentTrack.promptSummary
-    ) {
-      setLastAutoPrompt(currentTrack.promptSummary);
-      // Small delay to ensure smooth transition
-      setTimeout(() => {
-        handleAutoContinue();
-      }, 2000);
+    // Only trigger when queue is empty (playing last track)
+    if (totalQueueLength === 0) {
+      // Create a unique key for this trigger to prevent duplicates
+      const triggerKey = `${currentTrack.id}-${Date.now()}`;
+
+      // Check if we haven't already triggered for this specific moment
+      if (lastAutoPromptSummary !== triggerKey) {
+        setLastAutoPrompt(triggerKey);
+
+        // Small delay to ensure smooth transition and prevent race conditions
+        const timeoutId = setTimeout(() => {
+          handleAutoContinue();
+        }, 2000);
+
+        // Cleanup on unmount or dependency change
+        return () => clearTimeout(timeoutId);
+      }
     }
   }, [
     spotifyQueue?.currently_playing,
+    spotifyQueue?.queue,
     isAutoMode,
+    playbackState?.is_playing,
     lastAutoPromptSummary,
     handleAutoContinue,
     setLastAutoPrompt,
-    spotifyQueue?.queue,
   ]);
 
   const handleResetSession = () => {
@@ -343,7 +361,9 @@ export default function Home() {
             selectedModel
           ),
           // Fetch usage in parallel (non-blocking)
-          fetchUsage().catch(err => console.error('Failed to fetch usage:', err))
+          fetchUsage().catch((err) =>
+            console.error("Failed to fetch usage:", err)
+          ),
         ]);
 
         // Set the DJ message and recommendations
@@ -378,49 +398,52 @@ export default function Home() {
           }));
 
           // Add to queue without blocking
-          addToQueueMutation.mutate({
-            tracks,
-            promptSummary: recommendations.promptSummary,
-          }, {
-            onSuccess: (results) => {
-              // Track successfully queued songs
-              const successfulTracks = results
-                .filter((r) => r.success && r.track)
-                .map((r) => ({
-                  artist: r.track!.artists[0].name,
-                  title: r.track!.name,
-                  trackId: r.track!.id,
-                  source: "queued" as const,
-                }));
-
-              if (successfulTracks.length > 0) {
-                addTracks(successfulTracks);
-              }
-
-              const successCount = results.filter((r) => r.success).length;
-              const totalCount = results.length;
-
-              if (successCount === totalCount) {
-                toast.success(
-                  `Added ${successCount} songs to your Spotify queue!`
-                );
-                if (!playbackState || !playbackState.is_playing) {
-                  toast.info("Playback started automatically");
-                }
-              } else if (successCount > 0) {
-                toast.warning(
-                  `Added ${successCount}/${totalCount} songs to queue. Some tracks couldn't be found.`
-                );
-              } else {
-                toast.error("Failed to add songs to Spotify queue");
-              }
+          addToQueueMutation.mutate(
+            {
+              tracks,
+              promptSummary: recommendations.promptSummary,
             },
-            onError: (error) => {
-              if (error instanceof Error) {
-                toast.error(error.message);
-              }
+            {
+              onSuccess: (results) => {
+                // Track successfully queued songs
+                const successfulTracks = results
+                  .filter((r) => r.success && r.track)
+                  .map((r) => ({
+                    artist: r.track!.artists[0].name,
+                    title: r.track!.name,
+                    trackId: r.track!.id,
+                    source: "queued" as const,
+                  }));
+
+                if (successfulTracks.length > 0) {
+                  addTracks(successfulTracks);
+                }
+
+                const successCount = results.filter((r) => r.success).length;
+                const totalCount = results.length;
+
+                if (successCount === totalCount) {
+                  toast.success(
+                    `Added ${successCount} songs to your Spotify queue!`
+                  );
+                  if (!playbackState || !playbackState.is_playing) {
+                    toast.info("Playback started automatically");
+                  }
+                } else if (successCount > 0) {
+                  toast.warning(
+                    `Added ${successCount}/${totalCount} songs to queue. Some tracks couldn't be found.`
+                  );
+                } else {
+                  toast.error("Failed to add songs to Spotify queue");
+                }
+              },
+              onError: (error) => {
+                if (error instanceof Error) {
+                  toast.error(error.message);
+                }
+              },
             }
-          });
+          );
         }
       } catch (error) {
         console.error("Error getting recommendations:", error);
@@ -456,8 +479,8 @@ export default function Home() {
   };
 
   return (
-    <div className="h-screen bg-background flex items-center justify-center p-4 overflow-hidden">
-      <div className="max-w-6xl w-full flex flex-col gap-3 h-[calc(80vh+3rem)]">
+    <div className="h-dvh bg-background flex flex-col overflow-hidden">
+      <div className="w-full h-full flex flex-col gap-3 px-4 py-4">
         {/* Header with theme toggle and settings */}
         <div className="flex justify-between items-center flex-shrink-0">
           <div className="flex items-center gap-3">
@@ -488,8 +511,8 @@ export default function Home() {
           </div>
         </div>
 
-        {/* 2-column grid layout with fixed height */}
-        <div className="grid grid-cols-1 lg:grid-cols-[350px_1fr] gap-3 h-[80vh] overflow-hidden">
+        {/* 2-column grid layout that fills remaining space */}
+        <div className="grid grid-cols-1 lg:grid-cols-[450px_1fr] gap-3 flex-1 overflow-hidden">
           {/* Left column: Liked Songs */}
           <div className="flex flex-col gap-3 overflow-hidden">
             <LikedSongsCard />
@@ -537,7 +560,9 @@ export default function Home() {
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
                   <div>
-                    <CardTitle className="text-xl mb-0">Current Queue</CardTitle>
+                    <CardTitle className="text-xl mb-0">
+                      Current Queue
+                    </CardTitle>
                     <CardDescription>
                       {playbackState?.is_playing
                         ? "Now playing"
@@ -557,14 +582,16 @@ export default function Home() {
                         onPrevious={skipToPrevious}
                         onSeek={seek}
                         isLoading={isControlLoading}
-                        disabled={!isSpotifyAuthenticated || spotifyUser?.product !== "premium"}
+                        disabled={
+                          !isSpotifyAuthenticated ||
+                          spotifyUser?.product !== "premium"
+                        }
                       />
                     </div>
                   )}
                 </div>
               </CardHeader>
               <CardContent className="flex-1 overflow-hidden flex flex-col">
-
                 {/* Queue Items - Fills available space */}
                 <div className="space-y-2 overflow-y-auto overflow-x-hidden custom-scrollbar flex-1">
                   {/* Currently Playing */}
@@ -867,13 +894,11 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="space-y-2 mt-3">
-          {!isSpotifyAuthenticated && (
-            <p className="text-xs text-muted-foreground text-center">
-              Connect Spotify to automatically queue recommended songs
-            </p>
-          )}
-        </div>
+        {!isSpotifyAuthenticated && (
+          <p className="text-xs text-muted-foreground text-center pb-2">
+            Connect Spotify to automatically queue recommended songs
+          </p>
+        )}
       </div>
 
       {/* Reset Session Confirmation Dialog */}
