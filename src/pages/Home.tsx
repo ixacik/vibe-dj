@@ -77,7 +77,7 @@ import { toast } from "sonner";
 export default function Home() {
   const [inputValue, setInputValue] = useState("");
   const [djMessage, setDjMessage] = useState(
-    "Welcome! Request your favorite tracks and I'll add them to the queue!"
+    "Welcome to Vibe DJ! I'll keep your queue flowing with the perfect tracks. Tell me what vibe you're after and I'll add matching songs to your Spotify queue."
   );
   const [isLoading, setIsLoading] = useState(false);
   const [showResetDialog, setShowResetDialog] = useState(false);
@@ -308,7 +308,7 @@ export default function Home() {
 
     // Reset DJ message to default welcome message
     setDjMessage(
-      "Welcome! Request your favorite tracks and I'll add them to the queue!"
+      "Welcome to Vibe DJ! I'll keep your queue flowing with the perfect tracks. Tell me what vibe you're after and I'll add matching songs to your Spotify queue."
     );
 
     // Clear last recommendations
@@ -806,7 +806,7 @@ export default function Home() {
                       value={inputValue}
                       onChange={(e) => setInputValue(e.target.value)}
                       onKeyDown={handleKeyPress}
-                      placeholder='Try: "Play something like John Mayer Gravity"'
+                      placeholder="Songs like my selected tracks but with heavier breakdowns and intense build-ups..."
                       rows={1}
                       className={`w-full px-4 py-2 text-base border-0 bg-transparent shadow-none focus-visible:ring-0 focus:outline-none focus:ring-0 focus:ring-offset-0 resize-none overflow-hidden leading-tight placeholder-truncate ${
                         inputValue.trim() ? "pr-12" : ""
