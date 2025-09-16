@@ -43,6 +43,8 @@ import { HeartButton } from "@/components/heart-button";
 import { LikedSongsCard } from "@/components/liked-songs-card";
 import { UsageLimitBadge } from "@/components/usage-limit-badge";
 import { PricingModal } from "@/components/pricing-modal";
+import { PlaybackControlBar } from "@/components/playback-control-bar";
+import { usePlaybackControls } from "@/hooks/usePlaybackControls";
 import { useSelectedSongIds } from "@/stores/selected-songs-store";
 import { useLikedSongs } from "@/hooks/useLikedSongs";
 import { useModelStore } from "@/stores/model-store";
@@ -115,6 +117,9 @@ export default function Home() {
   const { data: playbackState } = useSpotifyPlayback();
   const skipToTrackMutation = useSkipToTrack();
   const addToQueueMutation = useAddToQueue();
+
+  // Playback controls
+  const { playPause, skipToNext, skipToPrevious, seek, isLoading: isControlLoading } = usePlaybackControls();
 
   // Conversation and play history hooks
   const { messages, addMessage, clearHistory, getFormattedHistory } =
@@ -529,15 +534,37 @@ export default function Home() {
                 </div>
               </div>
 
-              <CardHeader>
-                <CardTitle className="text-xl mb-0">Current Queue</CardTitle>
-                <CardDescription>
-                  {playbackState?.is_playing
-                    ? "Now playing"
-                    : "No active playback"}
-                </CardDescription>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-xl mb-0">Current Queue</CardTitle>
+                    <CardDescription>
+                      {playbackState?.is_playing
+                        ? "Now playing"
+                        : "No active playback"}
+                    </CardDescription>
+                  </div>
+                  {/* Playback Controls - Mini Player */}
+                  {spotifyQueue?.currently_playing && (
+                    <div className="w-80">
+                      <PlaybackControlBar
+                        isPlaying={playbackState?.is_playing || false}
+                        progress_ms={playbackState?.progress_ms || 0}
+                        duration_ms={spotifyQueue.currently_playing.duration_ms}
+                        trackId={spotifyQueue.currently_playing.id}
+                        onPlayPause={playPause}
+                        onNext={skipToNext}
+                        onPrevious={skipToPrevious}
+                        onSeek={seek}
+                        isLoading={isControlLoading}
+                        disabled={!isSpotifyAuthenticated || spotifyUser?.product !== "premium"}
+                      />
+                    </div>
+                  )}
+                </div>
               </CardHeader>
               <CardContent className="flex-1 overflow-hidden flex flex-col">
+
                 {/* Queue Items - Fills available space */}
                 <div className="space-y-2 overflow-y-auto overflow-x-hidden custom-scrollbar flex-1">
                   {/* Currently Playing */}

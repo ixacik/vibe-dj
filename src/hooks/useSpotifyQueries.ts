@@ -119,8 +119,13 @@ export function useSpotifyPlayback() {
       return spotify.getCurrentPlayback();
     },
     enabled: isAuthenticated,
-    refetchInterval: 5000, // Check every 5 seconds
-    staleTime: 3000,
+    refetchInterval: (query) => {
+      // Poll more frequently when playing for smooth progress updates
+      const data = query.state.data;
+      if (!data) return 5000; // 5s when no data
+      return data.is_playing ? 1000 : 5000; // 1s playing, 5s paused
+    },
+    staleTime: 500, // Lower stale time for more responsive updates
   });
 
   // Track currently playing track ID and update active prompt context

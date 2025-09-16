@@ -221,6 +221,80 @@ export class SpotifyService {
     }
   }
 
+  async skipToPrevious(): Promise<void> {
+    try {
+      await this.api.post('/me/player/previous');
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const spotifyError = error.response?.data as SpotifyError;
+        if (error.response?.status === 403) {
+          throw new Error('Spotify Premium is required to skip tracks');
+        }
+        if (error.response?.status === 404) {
+          throw new Error('No active Spotify player found');
+        }
+        throw new Error(spotifyError?.error?.message || 'Failed to skip to previous track');
+      }
+      throw error;
+    }
+  }
+
+  async pausePlayback(): Promise<void> {
+    try {
+      await this.api.put('/me/player/pause');
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const spotifyError = error.response?.data as SpotifyError;
+        if (error.response?.status === 403) {
+          throw new Error('Spotify Premium is required to control playback');
+        }
+        if (error.response?.status === 404) {
+          throw new Error('No active Spotify player found');
+        }
+        throw new Error(spotifyError?.error?.message || 'Failed to pause playback');
+      }
+      throw error;
+    }
+  }
+
+  async resumePlayback(): Promise<void> {
+    try {
+      await this.api.put('/me/player/play');
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const spotifyError = error.response?.data as SpotifyError;
+        if (error.response?.status === 403) {
+          throw new Error('Spotify Premium is required to control playback');
+        }
+        if (error.response?.status === 404) {
+          throw new Error('No active Spotify player found');
+        }
+        throw new Error(spotifyError?.error?.message || 'Failed to resume playback');
+      }
+      throw error;
+    }
+  }
+
+  async seekToPosition(position_ms: number): Promise<void> {
+    try {
+      await this.api.put('/me/player/seek', null, {
+        params: { position_ms }
+      });
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const spotifyError = error.response?.data as SpotifyError;
+        if (error.response?.status === 403) {
+          throw new Error('Spotify Premium is required to seek');
+        }
+        if (error.response?.status === 404) {
+          throw new Error('No active Spotify player found');
+        }
+        throw new Error(spotifyError?.error?.message || 'Failed to seek to position');
+      }
+      throw error;
+    }
+  }
+
   async addMultipleToQueue(tracks: Array<{ artist: string; title: string }>): Promise<Array<{ success: boolean; track?: SpotifyTrack; error?: string }>> {
     // Step 1: Search for all tracks in parallel
     const searchPromises = tracks.map(async ({ artist, title }) => {

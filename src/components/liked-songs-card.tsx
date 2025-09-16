@@ -147,6 +147,13 @@ export function LikedSongsCard() {
   );
 }
 
+type VirtualItemType = 'selected' | 'separator' | 'normal' | 'loading';
+
+interface VirtualItem {
+  type: VirtualItemType;
+  song?: LikedSong;
+}
+
 interface VirtualSongListProps {
   filteredSongs: LikedSong[];
   selectedSongs: LikedSong[];
@@ -170,39 +177,55 @@ function VirtualSongList({
 }: VirtualSongListProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  // Separate selected and non-selected songs for rendering
-  const { selectedForDisplay, nonSelectedForDisplay } = useMemo(() => {
+  // Create unified list of all items to virtualize
+  const virtualItems = useMemo(() => {
+    const items: VirtualItem[] = [];
+
     if (searchQuery) {
-      // When searching, virtualize all results
-      return {
-        selectedForDisplay: [],
-        nonSelectedForDisplay: filteredSongs,
-      };
+      // When searching, show all filtered songs without grouping
+      filteredSongs.forEach(song => {
+        items.push({ type: 'normal', song });
+      });
+    } else {
+      // When not searching, group selected songs at top
+      const nonSelected = filteredSongs.filter(
+        (song) => !selectedSongIds.has(song.id)
+      );
+
+      // Add selected songs first
+      selectedSongs.forEach(song => {
+        items.push({ type: 'selected', song });
+      });
+
+      // Add separator if we have both selected and non-selected
+      if (selectedSongs.length > 0 && nonSelected.length > 0) {
+        items.push({ type: 'separator' });
+      }
+
+      // Add non-selected songs
+      nonSelected.forEach(song => {
+        items.push({ type: 'normal', song });
+      });
     }
-    // When not searching, render selected songs statically, virtualize the rest
-    const nonSelected = filteredSongs.filter(
-      (song) => !selectedSongIds.has(song.id)
-    );
-    return {
-      selectedForDisplay: selectedSongs,
-      nonSelectedForDisplay: nonSelected,
-    };
-  }, [filteredSongs, selectedSongs, selectedSongIds, searchQuery]);
 
-  // Show separator only when we have both selected and non-selected songs
-  const showSeparator =
-    selectedForDisplay.length > 0 && nonSelectedForDisplay.length > 0;
+    // Add loading indicator
+    if (isLoadingMore && !searchQuery) {
+      items.push({ type: 'loading' });
+    }
 
-  // Only virtualize non-selected songs (or all when searching)
-  const virtualizedSongs = searchQuery ? filteredSongs : nonSelectedForDisplay;
-  const itemCount =
-    virtualizedSongs.length + (isLoadingMore && !searchQuery ? 1 : 0);
+    return items;
+  }, [filteredSongs, selectedSongs, selectedSongIds, searchQuery, isLoadingMore]);
 
   const virtualizer = useVirtualizer({
-    count: itemCount,
+    count: virtualItems.length,
     getScrollElement: () => scrollContainerRef.current,
-    estimateSize: () => 64, // Consistent height for all items
-    overscan: 5, // Render 5 items outside of viewport
+    estimateSize: (index) => {
+      const item = virtualItems[index];
+      if (item.type === 'separator') return 32; // Height for separator
+      if (item.type === 'loading') return 64; // Height for loading indicator
+      return 60; // Height for song items including gap (52px item + 8px gap)
+    },
+    overscan: 5,
   });
 
   return (
@@ -211,38 +234,7 @@ function VirtualSongList({
       className="h-full overflow-auto custom-scrollbar"
       style={{ contain: "strict" }}
     >
-      {/* Render selected songs statically (not virtualized) */}
-      {selectedForDisplay.map((song) => (
-        <div key={song.id} className="mb-1">
-          <div
-            className="group flex items-center gap-2 p-2 rounded-lg transition-all cursor-pointer bg-primary/10 hover:bg-primary/15"
-            onClick={() => toggleSongSelection(song.id)}
-          >
-            {song.albumArt && (
-              <img
-                src={song.albumArt}
-                alt={song.album}
-                className="w-10 h-10 rounded flex-shrink-0"
-              />
-            )}
-            <div className="flex-1 min-w-0 overflow-hidden">
-              <p className="text-sm font-medium truncate overflow-hidden text-ellipsis whitespace-nowrap">{song.name}</p>
-              <p className="text-xs text-muted-foreground truncate overflow-hidden text-ellipsis whitespace-nowrap">
-                {song.artist}
-              </p>
-            </div>
-          </div>
-        </div>
-      ))}
-
-      {/* Separator between selected and non-selected */}
-      {showSeparator && (
-        <div className="py-2">
-          <Separator className="w-full" />
-        </div>
-      )}
-
-      {/* Virtualized non-selected songs */}
+      {/* Single virtualized container for all items */}
       <div
         style={{
           height: `${virtualizer.getTotalSize()}px`,
@@ -250,13 +242,31 @@ function VirtualSongList({
           position: "relative",
         }}
       >
-        {virtualizer.getVirtualItems().map((virtualItem) => {
-          const { index, start, size } = virtualItem;
+        {virtualizer.getVirtualItems().map((virtualRow) => {
+          const item = virtualItems[virtualRow.index];
 
-          // Check if this is the loading indicator
-          const isLoadingItem = index === virtualizedSongs.length;
+          // Render separator
+          if (item.type === 'separator') {
+            return (
+              <div
+                key={`separator-${virtualRow.index}`}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  height: `${virtualRow.size}px`,
+                  transform: `translateY(${virtualRow.start}px)`,
+                }}
+                className="flex items-center py-2"
+              >
+                <Separator className="w-full" />
+              </div>
+            );
+          }
 
-          if (isLoadingItem) {
+          // Render loading indicator
+          if (item.type === 'loading') {
             return (
               <div
                 key="loading"
@@ -265,8 +275,8 @@ function VirtualSongList({
                   top: 0,
                   left: 0,
                   width: "100%",
-                  height: `${size}px`,
-                  transform: `translateY(${start}px)`,
+                  height: `${virtualRow.size}px`,
+                  transform: `translateY(${virtualRow.start}px)`,
                 }}
                 className="flex items-center justify-center py-4 text-sm text-muted-foreground"
               >
@@ -276,8 +286,9 @@ function VirtualSongList({
             );
           }
 
-          const song = virtualizedSongs[index];
-          if (!song) return null; // Safety check
+          // Render song items
+          const song = item.song;
+          if (!song) return null;
 
           const isSelected = selectedSongIds.has(song.id);
 
@@ -289,13 +300,14 @@ function VirtualSongList({
                 top: 0,
                 left: 0,
                 width: "100%",
-                height: `${size}px`,
-                transform: `translateY(${start}px)`,
+                height: `${virtualRow.size}px`,
+                transform: `translateY(${virtualRow.start}px)`,
+                padding: "0 0 8px 0", // Add 8px gap at the bottom
               }}
             >
               <div
                 className={`group flex items-center gap-2 p-2 rounded-lg transition-all cursor-pointer ${
-                  isSelected
+                  isSelected || item.type === 'selected'
                     ? "bg-primary/10 hover:bg-primary/15"
                     : "hover:bg-muted/50"
                 }`}

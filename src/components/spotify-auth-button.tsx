@@ -8,11 +8,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { LogOut, User, Loader2, CreditCard } from 'lucide-react';
+import { LogOut, User, Loader2, CreditCard, HelpCircle } from 'lucide-react';
 import { SpotifyLogo } from '@/components/spotify-logo';
 import { useSpotifyStore } from '@/stores/spotify-store';
 import { useSubscriptionTier, useSubscriptionStore } from '@/stores/subscription-store';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { HelpModal } from '@/components/help-modal';
 
 export function SpotifyAuthButton() {
   const {
@@ -28,6 +29,7 @@ export function SpotifyAuthButton() {
   } = useSpotifyStore();
   const tier = useSubscriptionTier();
   const { createPortalSession } = useSubscriptionStore();
+  const [showHelpModal, setShowHelpModal] = useState(false);
 
   useEffect(() => {
     // Only fetch if authenticated, no user, no error, and haven't tried yet
@@ -91,8 +93,9 @@ export function SpotifyAuthButton() {
   }
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
         <Button variant="outline" className="gap-2">
           <Avatar className="h-6 w-6">
             {user.images?.[0] ? (
@@ -142,11 +145,18 @@ export function SpotifyAuthButton() {
             Manage Subscription
           </DropdownMenuItem>
         )}
+        <DropdownMenuItem onClick={() => setShowHelpModal(true)}>
+          <HelpCircle className="mr-2 h-4 w-4" />
+          Help & Support
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
         <DropdownMenuItem onClick={logout} className="text-red-500 focus:text-red-500">
           <LogOut className="mr-2 h-4 w-4" />
           Sign Out
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+    <HelpModal open={showHelpModal} onOpenChange={setShowHelpModal} />
+    </>
   );
 }
