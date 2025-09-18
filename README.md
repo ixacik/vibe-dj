@@ -4,7 +4,7 @@ AI-Centric music discovery platform fully integrated with the Spotify ecosystem.
 <img width="1490" height="921" alt="image" src="https://github.com/user-attachments/assets/68f13134-9f75-4563-8613-675d6e902e3c" />
 
 ## How it works:
-- OAuth login with you Spotify account via Supabase Auth while capturing your secret-token to be used for the API requests
+- OAuth login with your Spotify account via Supabase Auth while capturing your secret-token to be used for the API requests
 - Your entire spotify "Liked Songs" library is fetched in the background via batched requests and cached via Tanstack Query
 - Choose a model (GPT-5 / GPT-5-mini)
 - You type a prompt into the input
